@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+env/
+.venv/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment & Config
+.env
+*.env
+config.py
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+*.csv
+*.dat
+*.xlsx
+mappings/*.json
+!mappings/sample_*.json
+
+# Credentials
+*.key
+*.pem
+*.cert
