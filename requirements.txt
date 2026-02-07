@@ -1,2 +1,2 @@
 requests>=2.28.0
-pyodbc>=4.0.0  # Only needed for ODBC method, optional
+pyodbc>=4.0.0

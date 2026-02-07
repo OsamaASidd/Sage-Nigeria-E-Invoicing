@@ -1,3 +1,9 @@
+"""
+Sage 50 ODBC Connection Test
+==============================
+Standalone test to verify Sage 50 database access.
+Run with 32-bit Python.
+"""
 import pyodbc
 
 db = "PROTONSECURITYSERVIC"

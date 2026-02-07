@@ -1,0 +1,3 @@
+customer_id,customer_name,tin,email,phone,address,city,postal_code,business_description
+CUST001,Dangote Group,TIN-000001,supplier_business@email.com,+23480254099000,32 owonikoko street,Gwarikpa,023401,Sales of Cement and building materials
+CUST002,Sample Customer,23773131-0001,crypt@g.com,+234,4 POINT ROAD OLUYOLA ESTATE,IBADAN,OLUYOLE,Lubricants

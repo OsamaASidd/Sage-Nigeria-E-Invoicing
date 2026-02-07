@@ -2,85 +2,111 @@
 
 Middleware integration between **Sage 50 Accounting 2021** and the **Nigeria E-Invoicing Portal** (Flick Network API).
 
+Reads sales invoices directly from Sage 50 via ODBC (Pervasive database) and submits them to the Nigeria e-invoicing API.
+
 ## Quick Start
 
 ### 1. Install Dependencies
 ```bash
-pip install requests
-pip install pyodbc    # Only if using ODBC method
+pip install requests pyodbc
 ```
 
-### 2. Configure
-Edit `config.py`:
-- API credentials (already set for preprod)
-- Supplier/company details
-- Sage 50 CSV export path
+### 2. Configure Sage 50 Data Access
+In Sage 50:
+1. **Maintain → Users → Set up security**
+2. Click **Crystal Reports/Data Access** tab
+3. Under "Access from Outside Sage 50", select **With the following login information**
+4. Set a 7-character password (min 1 letter + 1 number)
+5. Click Close
 
-### 3. Fill Mapping Files
-The API requires data that Sage 50 doesn't have natively. Fill these CSVs:
+### 3. Configure `config.py`
+Update with your details:
+- `SUPPLIER` — your client's company info and TIN
+- `SAGE_ODBC_*` — Sage 50 connection (already set for PROTON SECURITY)
+- `API_*` — E-invoicing API credentials (already set for preprod)
 
-| File | Purpose | Required Columns |
-|------|---------|-----------------|
-| `mappings/customer_tin_map.csv` | Customer TIN numbers + contact info | customer_id, tin, email, phone, address, city |
-| `mappings/hsn_code_map.csv` | Item → HS tariff code mapping | item_code, hsn_code |
-| `mappings/product_category_map.csv` | Item → product category | item_code, category |
-
-> **Tip:** Run `python main.py` → Option 6 to download valid HS codes from the API.
-
-### 4. Export Invoices from Sage 50
-1. Open Sage 50 → **Reports & Forms** → **Accounts Receivable**
-2. Select **Sales Journal** or **Invoice Register**
-3. Set date range → **Export → CSV**
-4. Save to the path in `config.py` (default: `C:\Sage50Export\invoices.csv`)
+### 4. Export Mapping Templates
+```bash
+python main.py → Option 9 (Export Mapping Templates)
+```
+This reads all customers and items from Sage 50 and creates CSV files in `mappings/` for you to fill in:
+- **customer_tin_map.csv** — Add TIN numbers for each customer
+- **hsn_code_map.csv** — Add HS tariff codes for each item
+- **product_category_map.csv** — Add product categories
 
 ### 5. Run
 ```bash
-python main.py                    # Interactive menu
-python main.py --test             # Test API connection
-python main.py --submit-csv       # Submit all invoices from CSV
-python main.py --fetch-resources  # Download HS codes & resources
-python main.py --list-invoices    # List submitted invoices
-python main.py --discover-db      # Explore Sage 50 ODBC tables
-```
-
-## Project Structure
-```
-nigeria-einvoicing/
-├── main.py                          # Entry point & CLI menu
-├── config.py                        # All configuration
-├── api_client.py                    # E-invoicing API client
-├── sage_reader.py                   # Sage 50 data reader (CSV + ODBC)
-├── transformer.py                   # Sage → API format mapping
-├── sample_sage_export.csv           # Sample CSV for testing
-├── mappings/
-│   ├── customer_tin_map.csv         # Customer ID → TIN mapping
-│   ├── hsn_code_map.csv             # Item code → HS code mapping
-│   └── product_category_map.csv     # Item code → category mapping
-├── logs/
-│   ├── integration.log              # Application log
-│   └── submission_log.csv           # Submitted invoice tracker
-└── resources/                       # Downloaded API resources (auto-created)
+python main.py                         # Interactive menu
+python main.py --test                  # Test API + Sage 50 connections
+python main.py --submit                # Submit all invoices
+python main.py --submit 2025-01-01     # Submit from date
+python main.py --dry-run               # Preview without submitting
+python main.py --export-mappings       # Export mapping templates
+python main.py --fetch-resources       # Download HS codes from API
 ```
 
 ## Workflow
 
 ```
-Sage 50 → CSV Export → main.py reads CSV
-                          ↓
-                    Loads mapping files (TIN, HS codes, categories)
-                          ↓
-                    Transforms to API JSON format
-                          ↓
-                    Validates all required fields
-                          ↓
-                    POST /invoice/generate
-                          ↓
-                    Logs IRN to submission_log.csv
-                          ↓
-                    Skips already-submitted invoices on next run
+Sage 50 (Pervasive DB)
+    ↓ ODBC Connection
+Read JrnlHdr (Module='A' = Sales)
+    ↓
+Read JrnlRow (line items)
+    ↓
+Read Customers + Address (names, contact info)
+    ↓
+Merge with mapping CSVs (TIN, HS codes, categories)
+    ↓
+Transform to API JSON format
+    ↓
+Validate all required fields
+    ↓
+POST /invoice/generate
+    ↓
+Log IRN to submission_log.csv
+    ↓
+Skip already-submitted on next run
 ```
 
-## API Endpoints Used
+## Project Structure
+```
+nigeria-einvoicing/
+├── main.py              # Entry point & CLI menu
+├── config.py            # All configuration (ODBC + API credentials)
+├── api_client.py        # E-invoicing API client
+├── sage_reader.py       # Sage 50 ODBC + CSV readers
+├── transformer.py       # Sage → API format mapping
+├── sage_test.py         # Standalone ODBC connection test
+├── mappings/
+│   ├── customer_tin_map.csv       # Customer → TIN (fill in)
+│   ├── hsn_code_map.csv           # Item → HS code (fill in)
+│   └── product_category_map.csv   # Item → category (fill in)
+├── logs/
+│   ├── integration.log            # App log
+│   └── submission_log.csv         # Submitted invoice tracker
+└── resources/                     # Downloaded API resources
+```
+
+## Sage 50 ODBC Connection
+
+| Setting | Value |
+|---------|-------|
+| Driver | Pervasive ODBC Client Interface |
+| Server | localhost |
+| Database | PROTONSECURITYSERVIC |
+| User | Peachtree |
+| Password | *(set in Sage 50 security)* |
+
+Key Sage 50 tables used:
+- **JrnlHdr** — Transaction headers (Module='A' for AR/Sales)
+- **JrnlRow** — Transaction line items
+- **Customers** — Customer master data
+- **Address** — Customer/vendor addresses
+- **LineItem** — Inventory/service items
+- **Company** — Company info
+
+## API Endpoints
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
@@ -92,27 +118,8 @@ Sage 50 → CSV Export → main.py reads CSV
 | `/resources/hs-codes` | GET | Get valid HS codes |
 | `/resources/all` | GET | Get all reference data |
 
-## Sage 50 CSV Column Mapping
-
-If your Sage 50 export has different column names, update `COLUMN_MAP` in `sage_reader.py`:
-
-```python
-COLUMN_MAP = {
-    "invoice_number": "Invoice Number",   # Change to match your export
-    "invoice_date": "Date",
-    "customer_id": "Customer ID",
-    "customer_name": "Customer Name",
-    "item_code": "Item Code",
-    "item_description": "Item Description",
-    "quantity": "Quantity",
-    "unit_price": "Unit Price",
-    "discount": "Discount",
-    "tax_rate": "Tax Rate",
-    "line_total": "Line Total",
-}
-```
-
-## Environment
-
-- **API:** Preprod (https://preprod-ng.flick.network/v1)
-- **For production:** Update `API_BASE_URL`, `PARTICIPANT_ID`, and `API_KEY` in config.py
+## Notes
+- Uses **32-bit Python** (required for 32-bit Pervasive ODBC driver)
+- Sage 50 can remain open while reading data
+- Duplicate submissions are prevented via `submission_log.csv`
+- For production: update API_BASE_URL, PARTICIPANT_ID, API_KEY in config.py

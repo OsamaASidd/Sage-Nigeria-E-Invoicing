@@ -7,7 +7,6 @@ Handles all communication with the Flick Network e-invoicing API.
 import requests
 import json
 import logging
-from datetime import datetime, date
 from config import API_BASE_URL, PARTICIPANT_ID, API_KEY
 
 logger = logging.getLogger(__name__)
@@ -64,50 +63,23 @@ class EInvoiceAPIClient:
     # ----------------------------------------------------------------
 
     def generate_invoice(self, invoice_data):
-        """
-        Submit a new invoice to the e-invoicing system.
-        
-        POST /invoice/generate
-        
-        Returns: IRN (Invoice Reference Number) on success.
-        """
+        """POST /invoice/generate — Submit a new invoice."""
         return self._request("POST", "/invoice/generate", invoice_data)
 
     def search_invoices(self):
-        """
-        List/search all invoices.
-        
-        GET /invoice/search
-        """
+        """GET /invoice/search — List all invoices."""
         return self._request("GET", "/invoice/search")
 
     def download_invoice(self, irn):
-        """
-        Download invoice details by IRN.
-        
-        GET /invoice/download/{irn}
-        """
+        """GET /invoice/download/{irn} — Download invoice details."""
         return self._request("GET", f"/invoice/download/{irn}")
 
     def get_invoice_details(self, irn):
-        """
-        Get invoice details/QR code by IRN.
-        
-        GET /invoice/details/{irn}
-        """
+        """GET /invoice/details/{irn} — Get invoice QR code."""
         return self._request("GET", f"/invoice/details/{irn}")
 
     def update_payment_status(self, irn, payment_status, reference):
-        """
-        Update payment status on an existing invoice.
-        
-        PATCH /invoice/{irn}
-        
-        Args:
-            irn: Invoice Reference Number
-            payment_status: e.g. "PAID", "REJECTED", "PARTIAL"
-            reference: Payment reference number
-        """
+        """PATCH /invoice/{irn} — Update payment status."""
         payload = {
             "payment_status": payment_status,
             "reference": reference,
@@ -115,7 +87,7 @@ class EInvoiceAPIClient:
         return self._request("PATCH", f"/invoice/{irn}", payload)
 
     # ----------------------------------------------------------------
-    # RESOURCE ENDPOINTS (for lookups)
+    # RESOURCE ENDPOINTS
     # ----------------------------------------------------------------
 
     def get_all_resources(self):
@@ -143,18 +115,17 @@ class EInvoiceAPIClient:
     # ----------------------------------------------------------------
 
     def test_connection(self):
-        """Test API connectivity by fetching resources."""
-        print("Testing API connection...")
+        """Test API connectivity."""
+        print("  Testing API...")
         result = self.get_all_resources()
         if result["success"]:
-            print("✅ API connection successful!")
+            print("  ✅ API connection successful!")
             return True
         else:
-            print(f"❌ API connection failed: {result['error']}")
+            print(f"  ❌ API failed: {result['error'][:100]}")
             return False
 
 
-# Quick test
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     client = EInvoiceAPIClient()

@@ -2,7 +2,10 @@
 Invoice Transformer
 ====================
 Maps Sage 50 invoice data to Nigeria E-Invoicing API format.
-Handles lookup mappings for TIN, HS codes, and product categories.
+
+Supports two modes:
+1. ODBC mode: Customer data already embedded in invoice dict
+2. CSV mode:  Looks up customer TIN/details from mapping files
 """
 
 import csv
@@ -21,85 +24,106 @@ class InvoiceTransformer:
     """Transforms Sage 50 invoice data into API-ready JSON."""
 
     def __init__(self):
-        self.customer_tin_map = self._load_csv_map(CUSTOMER_TIN_MAP_FILE, "customer_id", "tin")
-        self.hsn_code_map = self._load_csv_map(HSN_CODE_MAP_FILE, "item_code", "hsn_code")
-        self.category_map = self._load_csv_map(PRODUCT_CATEGORY_MAP_FILE, "item_code", "category")
+        self.customer_tin_map = self._load_csv_map(
+            CUSTOMER_TIN_MAP_FILE, "customer_id", "tin"
+        )
         self.customer_extra = self._load_customer_extra()
+        self.hsn_code_map = self._load_csv_map(
+            HSN_CODE_MAP_FILE, "item_code", "hsn_code"
+        )
+        self.category_map = self._load_csv_map(
+            PRODUCT_CATEGORY_MAP_FILE, "item_code", "category"
+        )
 
     def transform(self, sage_invoice):
         """
-        Transform a single Sage 50 invoice dict into API payload.
-        
-        Args:
-            sage_invoice: {
-                "invoice_number": "INV-001",
-                "date": "2025-03-05",
-                "customer_id": "CUST001",
-                "customer_name": "Customer Name",
-                "lines": [
-                    {
-                        "item_code": "ITEM001",
-                        "description": "Product Name",
-                        "quantity": 2,
-                        "unit_price": 10.0,
-                        "discount": 1.0,
-                        "tax_rate": 7.5,
-                    }
-                ]
-            }
-        
+        Transform a Sage 50 invoice dict into the API payload.
+
+        Expected sage_invoice (from ODBC reader):
+        {
+            "invoice_number": "INV-001",
+            "date": "2025-03-05",
+            "customer_id": "ATL",
+            "customer_name": "Atlantic Ltd",
+            "customer_email": "...",
+            "customer_phone": "...",
+            "customer_address": "...",
+            "customer_city": "...",
+            "customer_tin": "...",
+            "lines": [
+                {
+                    "item_code": "ITEM001",
+                    "description": "Security Guard Service",
+                    "quantity": 2,
+                    "unit_price": 10.0,
+                    "discount": 0,
+                    "tax_rate": 7.5,
+                    "line_total": 20.0,
+                }
+            ]
+        }
+
         Returns: dict ready to POST to /invoice/generate
         """
         inv = sage_invoice
-        cust_id = inv["customer_id"]
-        cust_extra = self.customer_extra.get(cust_id, {})
+        cust_id = inv.get("customer_id", "")
 
-        # Build customer party
-        customer_tin = self.customer_tin_map.get(cust_id, "")
-        if not customer_tin:
-            logger.warning(f"⚠️  No TIN found for customer '{cust_id}' ({inv['customer_name']})")
+        # Build customer party — prefer ODBC data, fallback to CSV mappings
+        customer_tin = (
+            inv.get("customer_tin", "")
+            or self.customer_tin_map.get(cust_id, "")
+        )
+        csv_extra = self.customer_extra.get(cust_id, {})
 
         customer_party = {
-            "party_name": inv["customer_name"],
+            "party_name": inv.get("customer_name", "") or csv_extra.get("name", cust_id),
             "tin": customer_tin,
-            "email": cust_extra.get("email", ""),
-            "telephone": cust_extra.get("phone", ""),
-            "business_description": cust_extra.get("business_description", ""),
+            "email": inv.get("customer_email", "") or csv_extra.get("email", ""),
+            "telephone": inv.get("customer_phone", "") or csv_extra.get("phone", ""),
+            "business_description": csv_extra.get("business_description", ""),
             "postal_address": {
-                "street_name": cust_extra.get("address", ""),
-                "city_name": cust_extra.get("city", ""),
-                "postal_zone": cust_extra.get("postal_code", ""),
+                "street_name": inv.get("customer_address", "") or csv_extra.get("address", ""),
+                "city_name": inv.get("customer_city", "") or csv_extra.get("city", ""),
+                "postal_zone": inv.get("customer_zip", "") or csv_extra.get("postal_code", ""),
                 "country": DEFAULT_COUNTRY,
             },
         }
 
+        if not customer_tin:
+            logger.warning(
+                f"⚠️  No TIN for customer '{cust_id}' ({customer_party['party_name']}). "
+                f"Add to {CUSTOMER_TIN_MAP_FILE}"
+            )
+
         # Build invoice lines
         invoice_lines = []
-        for line in inv["lines"]:
-            item_code = line["item_code"]
+        for line in inv.get("lines", []):
+            item_code = line.get("item_code", "")
             hsn_code = self.hsn_code_map.get(item_code, "")
             category = self.category_map.get(item_code, "")
 
             if not hsn_code:
-                logger.warning(f"⚠️  No HS code for item '{item_code}' ({line['description']})")
+                logger.warning(
+                    f"⚠️  No HS code for item '{item_code}' ({line.get('description', '')}). "
+                    f"Add to {HSN_CODE_MAP_FILE}"
+                )
 
             invoice_lines.append({
                 "hsn_code": hsn_code,
-                "price_amount": line["unit_price"],
+                "price_amount": line.get("unit_price", 0),
                 "discount_amount": line.get("discount", 0),
                 "uom": DEFAULT_UOM,
-                "invoiced_quantity": line["quantity"],
+                "invoiced_quantity": line.get("quantity", 1),
                 "product_category": category,
                 "tax_rate": line.get("tax_rate", DEFAULT_TAX_RATE),
                 "tax_category_id": DEFAULT_TAX_CATEGORY,
-                "item_name": line["description"],
+                "item_name": line.get("description", ""),
                 "sellers_item_identification": item_code,
             })
 
-        # Build final payload
         payload = {
-            "document_identifier": inv["invoice_number"],
-            "issue_date": inv["date"],
+            "document_identifier": inv.get("invoice_number", ""),
+            "issue_date": inv.get("date", ""),
             "invoice_type_code": "394",  # Standard Invoice
             "document_currency_code": DEFAULT_CURRENCY,
             "tax_currency_code": DEFAULT_CURRENCY,
@@ -116,7 +140,6 @@ class InvoiceTransformer:
         """
         errors = []
 
-        # Required fields
         if not payload.get("document_identifier"):
             errors.append("Missing document_identifier (invoice number)")
         if not payload.get("issue_date"):
@@ -127,7 +150,10 @@ class InvoiceTransformer:
         if not cust.get("party_name"):
             errors.append("Missing customer party_name")
         if not cust.get("tin"):
-            errors.append(f"Missing customer TIN for '{cust.get('party_name', 'Unknown')}'")
+            errors.append(
+                f"Missing customer TIN for '{cust.get('party_name', 'Unknown')}' "
+                f"— add to {CUSTOMER_TIN_MAP_FILE}"
+            )
 
         # Line validation
         lines = payload.get("invoice_line", [])
@@ -135,12 +161,18 @@ class InvoiceTransformer:
             errors.append("No invoice lines")
 
         for i, line in enumerate(lines):
+            prefix = f"Line {i+1}"
             if not line.get("hsn_code"):
-                errors.append(f"Line {i+1}: Missing HS code for '{line.get('item_name', 'Unknown')}'")
+                errors.append(
+                    f"{prefix}: Missing HS code for '{line.get('item_name', '')}' "
+                    f"— add to {HSN_CODE_MAP_FILE}"
+                )
             if not line.get("price_amount") or line["price_amount"] <= 0:
-                errors.append(f"Line {i+1}: Invalid price_amount")
+                errors.append(f"{prefix}: Invalid price_amount ({line.get('price_amount')})")
             if not line.get("invoiced_quantity") or line["invoiced_quantity"] <= 0:
-                errors.append(f"Line {i+1}: Invalid invoiced_quantity")
+                errors.append(f"{prefix}: Invalid invoiced_quantity ({line.get('invoiced_quantity')})")
+            if not line.get("item_name"):
+                errors.append(f"{prefix}: Missing item_name")
 
         return (len(errors) == 0, errors)
 
@@ -153,7 +185,7 @@ class InvoiceTransformer:
         """Load a CSV file as a key→value dictionary."""
         mapping = {}
         if not os.path.exists(filepath):
-            logger.warning(f"Mapping file not found: {filepath}")
+            logger.info(f"Mapping file not found (will create template): {filepath}")
             return mapping
 
         with open(filepath, "r", encoding="utf-8-sig") as f:
@@ -168,7 +200,7 @@ class InvoiceTransformer:
         return mapping
 
     def _load_customer_extra(self):
-        """Load extra customer details (email, phone, address) from TIN map file."""
+        """Load extra customer details from TIN map file."""
         extra = {}
         if not os.path.exists(CUSTOMER_TIN_MAP_FILE):
             return extra

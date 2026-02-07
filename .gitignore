@@ -20,7 +20,7 @@ logs/
 *.swp
 *.swo
 
-# Environment & Config
+# Environment & Credentials
 .env
 *.env
 config.py
@@ -30,11 +30,11 @@ config.py
 Thumbs.db
 
 # Data files
-*.csv
 *.dat
 *.xlsx
-mappings/*.json
-!mappings/sample_*.json
+
+# Downloaded resources (regenerable)
+resources/
 
 # Credentials
 *.key
