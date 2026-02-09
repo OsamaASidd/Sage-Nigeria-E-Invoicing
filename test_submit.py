@@ -1,15 +1,15 @@
 """
 Test: Fetch latest Sage 50 invoice and submit to Nigeria E-Invoicing API
 =========================================================================
-Uses ONLY confirmed columns from JrnlRow:
-  GLAcntNumber, Amount, Quantity, UnitCost, RowNumber,
-  ItemRecordNumber, RowDescription, JrnlKey_TrxNumber (via WHERE)
+FULLY DYNAMIC - discovers all column names before querying.
+All output written to test_output.txt
 """
 
 import pyodbc
 import requests
 import json
 import sys
+import os
 from datetime import datetime, date
 from decimal import Decimal
 
@@ -25,6 +25,17 @@ API_HEADERS = {
     "participant-id": "019a0b76-f33e-787a-8d0f-70dc096efba6",
     "x-api-key": "4b2e92e2929ce78f586ed468ddb7d666321e6f2a4cdcf65773669bcfec967719",
 }
+
+OUTPUT_FILE = "test_output.txt"
+_outfile = None
+
+
+def log(msg=""):
+    """Write to both console and output file."""
+    print(msg)
+    if _outfile:
+        _outfile.write(msg + "\n")
+        _outfile.flush()
 
 
 def to_float(val):
@@ -44,7 +55,20 @@ def to_str(val):
     return str(val).strip()
 
 
+def get_columns(cursor, table):
+    return [c.column_name for c in cursor.columns(table=table)]
+
+
+def find_col(columns, *candidates):
+    for c in candidates:
+        if c in columns:
+            return c
+    return None
+
+
 def main():
+    global _outfile
+
     if sys.platform == "win32":
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -52,67 +76,164 @@ def main():
         except:
             pass
 
-    print("=" * 60)
-    print("  TEST: Fetch Latest Invoice -> Submit to API")
-    print("=" * 60)
+    _outfile = open(OUTPUT_FILE, "w", encoding="utf-8")
+
+    try:
+        _run()
+    finally:
+        _outfile.close()
+        print(f"\n>>> Output saved to: {os.path.abspath(OUTPUT_FILE)}")
+
+
+def _run():
+    log("=" * 60)
+    log("  TEST: Fetch Latest Invoice -> Submit to API")
+    log("=" * 60)
 
     # ---- STEP 1: Connect ----
-    print("\n[1] Connecting to Sage 50...")
+    log("\n[1] Connecting to Sage 50...")
     try:
         conn = pyodbc.connect(ODBC_CONN)
-        print("    [OK] Connected")
+        log("    [OK] Connected")
     except Exception as e:
-        print(f"    [FAIL] {e}")
+        log(f"    [FAIL] {e}")
         return
 
     cursor = conn.cursor()
 
-    # ---- Build LineItem lookup (ItemRecordNumber -> ItemID + Description) ----
-    print("\n    Building LineItem lookup...")
-    item_lookup = {}  # {record_number_int: {item_id, description, price}}
-    try:
-        # First check LineItem columns
-        li_cols = [c.column_name for c in cursor.columns(table="LineItem")]
-        print(f"    LineItem columns: {li_cols[:15]}...")
+    # ============================================================
+    # STEP 1b: DISCOVER ALL TABLE SCHEMAS
+    # ============================================================
+    log("\n[1b] Discovering table schemas...")
 
-        # Find the record number column
-        li_recnum_col = None
-        for candidate in ["RecordNumber", "LineItemRecordNumber", "ItemRecordNumber"]:
-            if candidate in li_cols:
-                li_recnum_col = candidate
-                break
+    jrnlrow_cols = get_columns(cursor, "JrnlRow")
+    log(f"    JrnlRow ({len(jrnlrow_cols)} cols): {jrnlrow_cols}")
 
-        if li_recnum_col:
-            cursor.execute(f"""
-                SELECT {li_recnum_col}, ItemID, Description, SalesPrice1
-                FROM "LineItem"
-                WHERE ItemID <> ''
-            """)
+    lineitem_cols = get_columns(cursor, "LineItem")
+    log(f"    LineItem ({len(lineitem_cols)} cols): {lineitem_cols}")
+
+    # ---- Find the JrnlRow foreign key to JrnlHdr ----
+    jrnlrow_fk = find_col(jrnlrow_cols,
+        "JrnlKey_TrxNumber",
+        "Journal",
+        "JournalKey",
+        "TrxNumber",
+        "TransactionNumber",
+    )
+
+    if not jrnlrow_fk:
+        log("\n    [DIAG] No obvious FK column found. Probing JrnlRow sample...")
+        cursor.execute("""
+            SELECT JrnlKey_TrxNumber FROM "JrnlHdr"
+            WHERE Module = 'R' ORDER BY TransactionDate DESC
+        """)
+        sample_trx = cursor.fetchone()
+        if sample_trx:
+            trx_val = sample_trx[0]
+            log(f"    Looking for TRX value {trx_val} in JrnlRow columns...")
+            cursor.execute('SELECT * FROM "JrnlRow"')
+            sample_cols = [c[0] for c in cursor.description]
+            sample_row = cursor.fetchone()
+            if sample_row:
+                d = dict(zip(sample_cols, sample_row))
+                log(f"    Sample JrnlRow row (first row):")
+                for col_name, col_val in d.items():
+                    log(f"      {col_name} = {col_val!r}")
+
+                for col_name, col_val in d.items():
+                    if col_val == trx_val:
+                        jrnlrow_fk = col_name
+                        log(f"\n    [FOUND] FK column: {col_name} (matched value {trx_val})")
+                        break
+
+            if not jrnlrow_fk:
+                log("\n    Trying each column as FK...")
+                for candidate in jrnlrow_cols:
+                    try:
+                        cursor.execute(
+                            f'SELECT COUNT(*) FROM "JrnlRow" WHERE "{candidate}" = {trx_val}'
+                        )
+                        count = cursor.fetchone()[0]
+                        if count > 0:
+                            log(f"      {candidate} = {trx_val} -> {count} rows [MATCH]")
+                            jrnlrow_fk = candidate
+                            break
+                    except:
+                        pass
+
+    if jrnlrow_fk:
+        log(f"\n    JrnlRow FK column: {jrnlrow_fk}")
+    else:
+        log("\n    [FAIL] Cannot determine JrnlRow FK column!")
+        log("    Please check the JrnlRow column list above and report back.")
+        conn.close()
+        return
+
+    # ---- Find JrnlRow data columns ----
+    jr_amount = find_col(jrnlrow_cols, "Amount")
+    jr_qty = find_col(jrnlrow_cols, "Quantity", "StockingQuantity")
+    jr_price = find_col(jrnlrow_cols, "UnitCost", "UnitPrice", "StockingUnitCost")
+    jr_desc = find_col(jrnlrow_cols, "RowDescription", "Description",
+                       "ItemDescription", "LineDescription", "Memo")
+    jr_itemrec = find_col(jrnlrow_cols, "ItemRecordNumber")
+    jr_glacct = find_col(jrnlrow_cols, "GLAcntNumber")
+    jr_rownum = find_col(jrnlrow_cols, "RowNumber")
+
+    log(f"    JrnlRow mapping: FK={jrnlrow_fk}, Amt={jr_amount}, Qty={jr_qty}, "
+        f"Price={jr_price}, Desc={jr_desc}, ItemRec={jr_itemrec}")
+
+    # ---- Find LineItem columns ----
+    li_recnum = find_col(lineitem_cols, "ItemRecordNumber", "RecordNumber",
+                         "LineItemRecordNumber")
+    li_itemid = find_col(lineitem_cols, "ItemID")
+    li_desc = find_col(lineitem_cols, "ItemDescription", "Description",
+                       "SalesDescription")
+    li_price = find_col(lineitem_cols, "SalesPrice1", "SalesPrice", "Price",
+                        "UnitPrice", "Cost")
+
+    log(f"    LineItem mapping: RecNum={li_recnum}, ID={li_itemid}, "
+        f"Desc={li_desc}, Price={li_price}")
+
+    # ============================================================
+    # STEP 1c: Build LineItem lookup
+    # ============================================================
+    log("\n    Building LineItem lookup...")
+    item_lookup = {}
+    if li_recnum and li_itemid:
+        select_parts = [li_recnum, li_itemid]
+        if li_desc:
+            select_parts.append(li_desc)
+        if li_price:
+            select_parts.append(li_price)
+        select_str = ", ".join(select_parts)
+        try:
+            cursor.execute(f'SELECT {select_str} FROM "LineItem" WHERE {li_itemid} <> \'\'')
             for row in cursor.fetchall():
                 rec = row[0]
                 item_lookup[rec] = {
                     "item_id": to_str(row[1]),
-                    "description": to_str(row[2]),
-                    "price": to_float(row[3]),
+                    "description": to_str(row[2]) if li_desc else "",
+                    "price": to_float(row[3]) if li_price and len(row) > 3 else (
+                        to_float(row[2]) if li_price and not li_desc and len(row) > 2 else 0
+                    ),
                 }
-            print(f"    Loaded {len(item_lookup)} line items (keyed by {li_recnum_col})")
-        else:
-            # Fallback: just read all and use row index
-            cursor.execute('SELECT ItemID, Description, SalesPrice1 FROM "LineItem" WHERE ItemID <> \'\'')
-            idx = 1
-            for row in cursor.fetchall():
-                item_lookup[idx] = {
-                    "item_id": to_str(row[0]),
-                    "description": to_str(row[1]),
-                    "price": to_float(row[2]),
-                }
-                idx += 1
-            print(f"    Loaded {len(item_lookup)} line items (sequential)")
-    except Exception as e:
-        print(f"    [WARN] LineItem lookup failed: {e}")
+            log(f"    Loaded {len(item_lookup)} items (keyed by {li_recnum})")
+        except Exception as e:
+            log(f"    [WARN] LineItem query failed: {e}")
+            try:
+                cursor.execute(f'SELECT {li_recnum}, {li_itemid} FROM "LineItem" WHERE {li_itemid} <> \'\'')
+                for row in cursor.fetchall():
+                    item_lookup[row[0]] = {"item_id": to_str(row[1]), "description": "", "price": 0}
+                log(f"    Loaded {len(item_lookup)} items (minimal - ID only)")
+            except Exception as e2:
+                log(f"    [WARN] Minimal query also failed: {e2}")
+    else:
+        log(f"    [WARN] Cannot build item lookup (missing columns)")
 
-    # ---- STEP 2: Get latest sales invoice ----
-    print("\n[2] Fetching latest sales invoice (Module='R')...")
+    # ============================================================
+    # STEP 2: Get latest sales invoice
+    # ============================================================
+    log("\n[2] Fetching latest sales invoice (Module='R')...")
     cursor.execute("""
         SELECT JrnlKey_TrxNumber, CustVendId, TransactionDate,
                MainAmount, Reference, Description
@@ -123,7 +244,7 @@ def main():
     row = cursor.fetchone()
 
     if not row:
-        print("    [FAIL] No Module='R' invoices found!")
+        log("    [FAIL] No Module='R' invoices found!")
         conn.close()
         return
 
@@ -143,15 +264,17 @@ def main():
     else:
         tx_date_str = str(tx_date)[:10]
 
-    print(f"    Invoice:    {inv_num}")
-    print(f"    TRX#:       {trx_num}")
-    print(f"    Date:       {tx_date_str}")
-    print(f"    Amount:     N{main_amt:,.2f}")
-    print(f"    Desc:       {desc}")
-    print(f"    CustVendId: {cust_recnum}")
+    log(f"    Invoice:    {inv_num}")
+    log(f"    TRX#:       {trx_num}")
+    log(f"    Date:       {tx_date_str}")
+    log(f"    Amount:     N{main_amt:,.2f}")
+    log(f"    Desc:       {desc}")
+    log(f"    CustVendId: {cust_recnum}")
 
-    # ---- STEP 3: Get customer ----
-    print("\n[3] Looking up customer...")
+    # ============================================================
+    # STEP 3: Get customer
+    # ============================================================
+    log("\n[3] Looking up customer...")
     cursor.execute(f"""
         SELECT CustomerID, Customer_Bill_Name, Contact, Phone_Number,
                eMail_Address, SalesTaxResaleNum
@@ -167,15 +290,15 @@ def main():
         cust_phone = to_str(cust.get("Phone_Number", ""))
         cust_email = to_str(cust.get("eMail_Address", ""))
         cust_tin = to_str(cust.get("SalesTaxResaleNum", ""))
-        print(f"    ID:    {cust_id}")
-        print(f"    Name:  {cust_name}")
-        print(f"    TIN:   {cust_tin or '(none)'}")
+        log(f"    ID:    {cust_id}")
+        log(f"    Name:  {cust_name}")
+        log(f"    TIN:   {cust_tin or '(none)'}")
     else:
         cust_name = desc
         cust_phone = ""
         cust_email = ""
         cust_tin = ""
-        print(f"    [WARN] Not found, using: {desc}")
+        log(f"    [WARN] Not found, using: {desc}")
 
     # Get address
     cust_address = ""
@@ -195,54 +318,57 @@ def main():
             cust_address = ", ".join(p for p in parts if p)
             cust_city = to_str(ad.get("City", ""))
             cust_zip = to_str(ad.get("Zip", ""))
-            print(f"    Addr:  {cust_address}")
-            print(f"    City:  {cust_city}")
+            log(f"    Addr:  {cust_address}")
+            log(f"    City:  {cust_city}")
     except Exception as e:
-        print(f"    [WARN] Address: {e}")
+        log(f"    [WARN] Address: {e}")
 
-    # ---- STEP 4: Get line items ----
-    # JrnlRow ACTUAL columns:
-    #   Amount, Quantity, UnitCost, RowDescription, ItemRecordNumber,
-    #   GLAcntNumber, RowNumber (NO: UnitPrice, ItemID, Description, TaxAmount, DiscountAmount)
-    print("\n[4] Fetching line items from JrnlRow...")
+    # ============================================================
+    # STEP 4: Get line items (using discovered columns)
+    # ============================================================
+    log("\n[4] Fetching line items from JrnlRow...")
+
+    jr_select_cols = []
+    if jr_glacct: jr_select_cols.append(jr_glacct)
+    if jr_amount: jr_select_cols.append(jr_amount)
+    if jr_qty: jr_select_cols.append(jr_qty)
+    if jr_price: jr_select_cols.append(jr_price)
+    if jr_rownum: jr_select_cols.append(jr_rownum)
+    if jr_itemrec: jr_select_cols.append(jr_itemrec)
+    if jr_desc: jr_select_cols.append(jr_desc)
+
+    jr_select_str = ", ".join(jr_select_cols)
+    log(f"    SELECT {jr_select_str}")
+    log(f"    WHERE {jrnlrow_fk} = {trx_num}")
 
     def fetch_lines(cur, trx, items_lookup):
-        """Fetch JrnlRow lines using only confirmed columns."""
-        cur.execute(f"""
-            SELECT GLAcntNumber, Amount, Quantity, UnitCost,
-                   RowNumber, ItemRecordNumber, RowDescription
-            FROM "JrnlRow"
-            WHERE JrnlKey_TrxNumber = {trx}
-        """)
+        cur.execute(f'SELECT {jr_select_str} FROM "JrnlRow" WHERE "{jrnlrow_fk}" = {trx}')
         rc = [c[0] for c in cur.description]
         result = []
         all_rows = cur.fetchall()
-        print(f"    Total JrnlRow entries for TRX {trx}: {len(all_rows)}")
+        log(f"    Total JrnlRow entries for TRX {trx}: {len(all_rows)}")
 
         for lr in all_rows:
             ld = dict(zip(rc, lr))
-            qty = to_float(ld.get("Quantity", 0))
-            amount = to_float(ld.get("Amount", 0))
-            unit_cost = to_float(ld.get("UnitCost", 0))
-            item_recnum = ld.get("ItemRecordNumber", 0)
-            row_desc = to_str(ld.get("RowDescription", ""))
+            qty = to_float(ld.get(jr_qty, 0)) if jr_qty else 0
+            amount = to_float(ld.get(jr_amount, 0)) if jr_amount else 0
+            unit_cost = to_float(ld.get(jr_price, 0)) if jr_price else 0
+            item_recnum = ld.get(jr_itemrec, 0) if jr_itemrec else 0
+            row_desc = to_str(ld.get(jr_desc, "")) if jr_desc else ""
 
-            # Look up item details from LineItem table
             item_info = items_lookup.get(item_recnum, {})
             item_id = item_info.get("item_id", "")
             item_desc = item_info.get("description", "")
             sales_price = item_info.get("price", 0)
 
-            # Use best available description
             line_desc = row_desc or item_desc or item_id or ""
+            unit_price = abs(unit_cost) if unit_cost != 0 else (
+                sales_price if sales_price > 0 else abs(amount)
+            )
 
-            # Use sales price if unit cost is 0
-            unit_price = abs(unit_cost) if unit_cost != 0 else (sales_price if sales_price > 0 else abs(amount))
+            log(f"      ItemRec={item_recnum} ItemID={item_id!r} "
+                f"Desc={line_desc!r} Qty={qty} Price={unit_cost} Amt={amount}")
 
-            print(f"      ItemRec={item_recnum} ItemID={item_id!r} "
-                  f"Desc={line_desc!r} Qty={qty} UnitCost={unit_cost} Amt={amount}")
-
-            # Keep lines with quantity or linked item
             if qty != 0 or item_recnum > 0:
                 result.append({
                     "item_code": item_id or str(item_recnum),
@@ -258,7 +384,7 @@ def main():
 
     # If no lines, search next 50 invoices
     if not lines:
-        print("\n    [WARN] No usable lines. Searching recent invoices...")
+        log("\n    [WARN] No usable lines. Searching recent invoices...")
         cursor.execute("""
             SELECT JrnlKey_TrxNumber, CustVendId, TransactionDate,
                    MainAmount, Reference, Description
@@ -267,7 +393,6 @@ def main():
             ORDER BY TransactionDate DESC
         """)
         search_cols = [c[0] for c in cursor.description]
-        # Skip first (already tried)
         cursor.fetchone()
         for attempt_row in cursor.fetchmany(50):
             att = dict(zip(search_cols, attempt_row))
@@ -287,7 +412,6 @@ def main():
                     tx_date_str = str(tx_date)[:10]
                 lines = test_lines
 
-                # Re-fetch customer
                 cursor.execute(f"""
                     SELECT CustomerID, Customer_Bill_Name, Phone_Number,
                            eMail_Address, SalesTaxResaleNum
@@ -302,31 +426,41 @@ def main():
                     cust_email = to_str(cd.get("eMail_Address", ""))
                     cust_tin = to_str(cd.get("SalesTaxResaleNum", ""))
 
-                print(f"\n    Found: {inv_num} | {cust_name} | {tx_date_str} | "
-                      f"N{main_amt:,.2f} | {len(lines)} lines")
+                log(f"\n    Found: {inv_num} | {cust_name} | {tx_date_str} | "
+                    f"N{main_amt:,.2f} | {len(lines)} lines")
                 break
 
     conn.close()
 
     if not lines:
-        print("\n    [FAIL] No invoice with usable line items found.")
+        log("\n    [FAIL] No invoice with usable line items found.")
         return
 
-    print(f"\n    Usable lines: {len(lines)}")
+    log(f"\n    Usable lines: {len(lines)}")
 
-    # ---- STEP 5: Build payload ----
-    print("\n[5] Building API payload...")
+    # ============================================================
+    # STEP 5: Build payload
+    # ============================================================
+    log("\n[5] Building API payload...")
 
     if not cust_tin:
         cust_tin = "23773131-0001"
-        print(f"    [WARN] No customer TIN -- using test TIN: {cust_tin}")
+        log(f"    [WARN] No customer TIN -- using test TIN: {cust_tin}")
 
     api_lines = []
     for i, line in enumerate(lines):
+        # API requires discount_amount >= 1, so use 1 when no discount
+        discount = line["discount"] if line["discount"] >= 1 else 1
+
+        # Skip lines with zero price
+        if line["unit_price"] <= 0:
+            log(f"    Line {i+1}: SKIPPED (zero price) - {line['description']}")
+            continue
+
         api_lines.append({
             "hsn_code": "2710.19",
             "price_amount": line["unit_price"],
-            "discount_amount": line["discount"],
+            "discount_amount": discount,
             "uom": "ST",
             "invoiced_quantity": line["quantity"],
             "product_category": "Security Services",
@@ -335,8 +469,14 @@ def main():
             "item_name": line["description"] or f"Line Item {i+1}",
             "sellers_item_identification": line["item_code"] or f"ITEM-{i+1}",
         })
-        print(f"    Line {i+1}: {line['description']} | "
-              f"Qty={line['quantity']} x N{line['unit_price']:,.2f}")
+        log(f"    Line {i+1}: {line['description']} | "
+            f"Qty={line['quantity']} x N{line['unit_price']:,.2f}")
+
+    if not api_lines:
+        log("\n    [FAIL] No lines with valid price after filtering.")
+        return
+
+    log(f"\n    API lines (after filtering): {len(api_lines)}")
 
     payload = {
         "document_identifier": inv_num,
@@ -360,16 +500,18 @@ def main():
         "invoice_line": api_lines,
     }
 
-    print("\n" + "-" * 60)
-    print("  FULL API PAYLOAD")
-    print("-" * 60)
-    print(json.dumps(payload, indent=2))
+    log("\n" + "-" * 60)
+    log("  FULL API PAYLOAD")
+    log("-" * 60)
+    log(json.dumps(payload, indent=2))
 
-    # ---- STEP 6: Submit ----
-    print("\n" + "=" * 60)
-    print("[6] Submitting to Nigeria E-Invoicing API...")
-    print(f"    URL: {API_URL}/invoice/generate")
-    print("=" * 60)
+    # ============================================================
+    # STEP 6: Submit
+    # ============================================================
+    log("\n" + "=" * 60)
+    log("[6] Submitting to Nigeria E-Invoicing API...")
+    log(f"    URL: {API_URL}/invoice/generate")
+    log("=" * 60)
 
     try:
         response = requests.post(
@@ -379,11 +521,11 @@ def main():
             timeout=30,
         )
 
-        print(f"\n    HTTP Status: {response.status_code}")
-        print(f"\n    Response Body:")
+        log(f"\n    HTTP Status: {response.status_code}")
+        log(f"\n    Response Body:")
         try:
             resp_json = response.json()
-            print(json.dumps(resp_json, indent=2))
+            log(json.dumps(resp_json, indent=2))
 
             if response.status_code in (200, 201):
                 irn = (
@@ -391,23 +533,23 @@ def main():
                     or resp_json.get("data", {}).get("irn")
                     or "N/A"
                 )
-                print(f"\n    [OK] SUCCESS!")
-                print(f"    IRN: {irn}")
+                log(f"\n    [OK] SUCCESS!")
+                log(f"    IRN: {irn}")
             else:
-                print(f"\n    [FAIL] API returned status {response.status_code}")
+                log(f"\n    [FAIL] API returned status {response.status_code}")
         except:
-            print(response.text[:2000])
+            log(response.text[:2000])
 
     except requests.exceptions.ConnectionError as e:
-        print(f"\n    [FAIL] Connection error: {e}")
+        log(f"\n    [FAIL] Connection error: {e}")
     except requests.exceptions.Timeout:
-        print(f"\n    [FAIL] Request timed out")
+        log(f"\n    [FAIL] Request timed out")
     except Exception as e:
-        print(f"\n    [FAIL] {e}")
+        log(f"\n    [FAIL] {e}")
 
-    print("\n" + "=" * 60)
-    print("  TEST COMPLETE")
-    print("=" * 60)
+    log("\n" + "=" * 60)
+    log("  TEST COMPLETE")
+    log("=" * 60)
 
 
 if __name__ == "__main__":
