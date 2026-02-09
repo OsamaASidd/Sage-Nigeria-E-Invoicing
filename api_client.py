@@ -27,7 +27,7 @@ class EInvoiceAPIClient:
     def _request(self, method, endpoint, payload=None):
         """Make an API request with error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        logger.info(f"API {method} → {url}")
+        logger.info(f"API {method} -> {url}")
 
         try:
             response = requests.request(
@@ -63,23 +63,23 @@ class EInvoiceAPIClient:
     # ----------------------------------------------------------------
 
     def generate_invoice(self, invoice_data):
-        """POST /invoice/generate — Submit a new invoice."""
+        """POST /invoice/generate - Submit a new invoice."""
         return self._request("POST", "/invoice/generate", invoice_data)
 
     def search_invoices(self):
-        """GET /invoice/search — List all invoices."""
+        """GET /invoice/search - List all invoices."""
         return self._request("GET", "/invoice/search")
 
     def download_invoice(self, irn):
-        """GET /invoice/download/{irn} — Download invoice details."""
+        """GET /invoice/download/{irn} - Download invoice details."""
         return self._request("GET", f"/invoice/download/{irn}")
 
     def get_invoice_details(self, irn):
-        """GET /invoice/details/{irn} — Get invoice QR code."""
+        """GET /invoice/details/{irn} - Get invoice QR code."""
         return self._request("GET", f"/invoice/details/{irn}")
 
     def update_payment_status(self, irn, payment_status, reference):
-        """PATCH /invoice/{irn} — Update payment status."""
+        """PATCH /invoice/{irn} - Update payment status."""
         payload = {
             "payment_status": payment_status,
             "reference": reference,
@@ -119,10 +119,10 @@ class EInvoiceAPIClient:
         print("  Testing API...")
         result = self.get_all_resources()
         if result["success"]:
-            print("  ✅ API connection successful!")
+            print("  [OK] API connection successful!")
             return True
         else:
-            print(f"  ❌ API failed: {result['error'][:100]}")
+            print(f"  [FAIL] API failed: {result['error'][:100]}")
             return False
 
 

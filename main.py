@@ -22,6 +22,14 @@ import json
 import logging
 from datetime import datetime
 
+# Fix Windows console encoding for Unicode characters
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from config import SUBMISSION_LOG_FILE, SUPPLIER
 from api_client import EInvoiceAPIClient
 from sage_reader import SageODBCReader, SageCSVReader, discover_sage_database
@@ -32,13 +40,17 @@ os.makedirs("logs", exist_ok=True)
 os.makedirs("resources", exist_ok=True)
 os.makedirs("mappings", exist_ok=True)
 
+# Create handlers with proper encoding
+file_handler = logging.FileHandler("logs/integration.log", encoding="utf-8")
+file_handler.setLevel(logging.INFO)
+
+stream_handler = logging.StreamHandler()
+stream_handler.setLevel(logging.INFO)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("logs/integration.log"),
-        logging.StreamHandler(),
-    ],
+    handlers=[file_handler, stream_handler],
 )
 logger = logging.getLogger(__name__)
 
@@ -52,23 +64,23 @@ class EInvoiceIntegration:
         self.submitted_irns = self._load_submission_log()
 
     # ================================================================
-    # CORE WORKFLOW: ODBC → Transform → Submit
+    # CORE WORKFLOW: ODBC -> Transform -> Submit
     # ================================================================
 
     def submit_invoices_from_sage(self, from_date=None, to_date=None, dry_run=False):
         """
-        Main workflow: Read from Sage 50 ODBC → Transform → Validate → Submit
+        Main workflow: Read from Sage 50 ODBC -> Transform -> Validate -> Submit
         """
         print("\n" + "=" * 60)
-        print("  📤 SUBMITTING INVOICES FROM SAGE 50 (ODBC)")
+        print("  SUBMITTING INVOICES FROM SAGE 50 (ODBC)")
         print("=" * 60)
 
         # Step 1: Connect to Sage 50
         reader = SageODBCReader()
         if not reader.connect():
-            print("❌ Cannot connect to Sage 50. Check config.py ODBC settings.")
+            print("[FAIL] Cannot connect to Sage 50. Check config.py ODBC settings.")
             return
-        print("✅ Connected to Sage 50")
+        print("[OK] Connected to Sage 50")
 
         # Step 2: Read sales invoices
         print(f"\nReading sales invoices...")
@@ -81,23 +93,23 @@ class EInvoiceIntegration:
         reader.close()
 
         if not invoices:
-            print("❌ No sales invoices found for the given date range.")
+            print("[FAIL] No sales invoices found for the given date range.")
             return
 
-        print(f"\n📋 Found {len(invoices)} sales invoices\n")
+        print(f"\nFound {len(invoices)} sales invoices\n")
 
         # Step 3: Process each invoice
         results = {"submitted": 0, "failed": 0, "skipped": 0, "dry_run": 0}
 
         for inv_num, sage_invoice in invoices.items():
-            print(f"{'─' * 50}")
-            print(f"📄 {inv_num} | {sage_invoice['customer_name']} | "
-                  f"{sage_invoice['date']} | ₦{sage_invoice['main_amount']:,.2f} | "
+            print(f"{'~' * 50}")
+            print(f"  {inv_num} | {sage_invoice['customer_name']} | "
+                  f"{sage_invoice['date']} | N{sage_invoice['main_amount']:,.2f} | "
                   f"{len(sage_invoice['lines'])} lines")
 
             # Skip already submitted
             if inv_num in self.submitted_irns:
-                print(f"   ⏭️  Already submitted (IRN: {self.submitted_irns[inv_num]})")
+                print(f"   [SKIP] Already submitted (IRN: {self.submitted_irns[inv_num]})")
                 results["skipped"] += 1
                 continue
 
@@ -105,7 +117,7 @@ class EInvoiceIntegration:
             try:
                 payload = self.transformer.transform(sage_invoice)
             except Exception as e:
-                print(f"   ❌ Transform error: {e}")
+                print(f"   [FAIL] Transform error: {e}")
                 logger.exception(f"Transform error for {inv_num}")
                 results["failed"] += 1
                 continue
@@ -113,21 +125,21 @@ class EInvoiceIntegration:
             # Validate
             is_valid, errors = self.transformer.validate(payload)
             if not is_valid:
-                print(f"   ❌ Validation failed:")
+                print(f"   [FAIL] Validation failed:")
                 for err in errors:
                     print(f"      - {err}")
                 results["failed"] += 1
                 continue
 
-            # Dry run — show payload but don't submit
+            # Dry run -- show payload but don't submit
             if dry_run:
-                print(f"   🧪 DRY RUN — payload:")
+                print(f"   [DRY RUN] payload:")
                 print(f"      {json.dumps(payload, indent=2)[:500]}")
                 results["dry_run"] += 1
                 continue
 
             # Submit
-            print(f"   📤 Submitting...")
+            print(f"   Submitting...")
             response = self.api.generate_invoice(payload)
 
             if response["success"]:
@@ -136,23 +148,23 @@ class EInvoiceIntegration:
                     or response["data"].get("data", {}).get("irn")
                     or "UNKNOWN"
                 )
-                print(f"   ✅ SUCCESS! IRN: {irn}")
+                print(f"   [OK] SUCCESS! IRN: {irn}")
                 self._log_submission(inv_num, irn, "SUCCESS", payload)
                 results["submitted"] += 1
             else:
                 error_msg = response.get("error", "Unknown error")
-                print(f"   ❌ FAILED [{response['status']}]: {error_msg[:200]}")
+                print(f"   [FAIL] [{response['status']}]: {error_msg[:200]}")
                 self._log_submission(inv_num, "", "FAILED", payload, error_msg)
                 results["failed"] += 1
 
         # Summary
         print(f"\n{'=' * 60}")
-        print(f"  📊 SUMMARY")
-        print(f"     ✅ Submitted: {results['submitted']}")
-        print(f"     ❌ Failed:    {results['failed']}")
-        print(f"     ⏭️  Skipped:  {results['skipped']}")
+        print(f"  SUMMARY")
+        print(f"     Submitted: {results['submitted']}")
+        print(f"     Failed:    {results['failed']}")
+        print(f"     Skipped:   {results['skipped']}")
         if dry_run:
-            print(f"     🧪 Dry run:  {results['dry_run']}")
+            print(f"     Dry run:   {results['dry_run']}")
         print(f"{'=' * 60}\n")
 
     # ================================================================
@@ -160,46 +172,46 @@ class EInvoiceIntegration:
     # ================================================================
 
     def submit_invoices_from_csv(self, csv_path=None):
-        """Read CSV → Transform → Validate → Submit."""
+        """Read CSV -> Transform -> Validate -> Submit."""
         print("\n" + "=" * 60)
-        print("  📄 SUBMITTING INVOICES FROM CSV EXPORT")
+        print("  SUBMITTING INVOICES FROM CSV EXPORT")
         print("=" * 60)
 
         reader = SageCSVReader(invoices_path=csv_path) if csv_path else SageCSVReader()
         invoices = reader.read_invoices()
 
         if not invoices:
-            print("❌ No invoices found in CSV.")
+            print("[FAIL] No invoices found in CSV.")
             return
 
-        print(f"\n📋 Found {len(invoices)} invoices in CSV")
+        print(f"\nFound {len(invoices)} invoices in CSV")
         results = {"submitted": 0, "failed": 0, "skipped": 0}
 
         for inv_num, sage_invoice in invoices.items():
-            print(f"\n{'─' * 40}")
+            print(f"\n{'~' * 40}")
             print(f"Processing: {inv_num} | {sage_invoice['customer_name']}")
 
             if inv_num in self.submitted_irns:
-                print(f"  ⏭️  Already submitted")
+                print(f"  [SKIP] Already submitted")
                 results["skipped"] += 1
                 continue
 
             try:
                 payload = self.transformer.transform(sage_invoice)
             except Exception as e:
-                print(f"  ❌ Transform error: {e}")
+                print(f"  [FAIL] Transform error: {e}")
                 results["failed"] += 1
                 continue
 
             is_valid, errors = self.transformer.validate(payload)
             if not is_valid:
-                print(f"  ❌ Validation failed:")
+                print(f"  [FAIL] Validation failed:")
                 for err in errors:
                     print(f"     - {err}")
                 results["failed"] += 1
                 continue
 
-            print(f"  📤 Submitting...")
+            print(f"  Submitting...")
             response = self.api.generate_invoice(payload)
 
             if response["success"]:
@@ -208,15 +220,15 @@ class EInvoiceIntegration:
                     or response["data"].get("data", {}).get("irn")
                     or "UNKNOWN"
                 )
-                print(f"  ✅ IRN: {irn}")
+                print(f"  [OK] IRN: {irn}")
                 self._log_submission(inv_num, irn, "SUCCESS", payload)
                 results["submitted"] += 1
             else:
-                print(f"  ❌ {response.get('error', '')[:200]}")
+                print(f"  [FAIL] {response.get('error', '')[:200]}")
                 self._log_submission(inv_num, "", "FAILED", payload, response.get("error", ""))
                 results["failed"] += 1
 
-        print(f"\n📊 Submitted: {results['submitted']} | "
+        print(f"\nSUMMARY: Submitted: {results['submitted']} | "
               f"Failed: {results['failed']} | Skipped: {results['skipped']}")
 
     # ================================================================
@@ -228,7 +240,7 @@ class EInvoiceIntegration:
         Read customers and items from Sage 50 and export CSV templates
         for the user to fill in TIN, HS codes, and categories.
         """
-        print("\n📦 Exporting mapping templates from Sage 50...")
+        print("\nExporting mapping templates from Sage 50...")
 
         reader = SageODBCReader()
         if not reader.connect():
@@ -266,7 +278,7 @@ class EInvoiceIntegration:
                     "business_description": existing.get("business_description", ""),
                 })
 
-        print(f"  ✅ {tin_file} — {len(customers)} customers (fill in TIN column)")
+        print(f"  [OK] {tin_file} -- {len(customers)} customers (fill in TIN column)")
 
         # Export HS code template
         items = reader.get_line_items()
@@ -291,7 +303,7 @@ class EInvoiceIntegration:
                     "hsn_code": existing.get("hsn_code", ""),
                 })
 
-        print(f"  ✅ {hsn_file} — {len(items)} items (fill in hsn_code column)")
+        print(f"  [OK] {hsn_file} -- {len(items)} items (fill in hsn_code column)")
 
         # Export product category template
         cat_file = "mappings/product_category_map.csv"
@@ -315,14 +327,14 @@ class EInvoiceIntegration:
                     "category": existing.get("category", ""),
                 })
 
-        print(f"  ✅ {cat_file} — {len(items)} items (fill in category column)")
+        print(f"  [OK] {cat_file} -- {len(items)} items (fill in category column)")
 
         reader.close()
-        print("\n📝 Next steps:")
+        print("\nNext steps:")
         print("   1. Fill in TIN for each customer in customer_tin_map.csv")
         print("   2. Fill in HS codes for each item in hsn_code_map.csv")
         print("   3. Fill in categories in product_category_map.csv")
-        print("   4. Run: python main.py → Submit Invoices")
+        print("   4. Run: python main.py -> Submit Invoices")
 
     # ================================================================
     # RESOURCE MANAGEMENT
@@ -330,7 +342,7 @@ class EInvoiceIntegration:
 
     def fetch_and_save_resources(self):
         """Download all resources (HS codes, currencies, etc.)."""
-        print("\n📥 Fetching resources from API...")
+        print("\nFetching resources from API...")
 
         resources = {
             "hs_codes": self.api.get_hs_codes,
@@ -347,9 +359,9 @@ class EInvoiceIntegration:
                 filepath = f"resources/{name}.json"
                 with open(filepath, "w") as f:
                     json.dump(result["data"], f, indent=2)
-                print(f"✅ → {filepath}")
+                print(f"[OK] -> {filepath}")
             else:
-                print(f"❌ {result['error'][:100]}")
+                print(f"[FAIL] {result['error'][:100]}")
 
     # ================================================================
     # INVOICE MANAGEMENT
@@ -357,7 +369,7 @@ class EInvoiceIntegration:
 
     def list_submitted_invoices(self):
         """List all invoices from the API."""
-        print("\n📋 Fetching invoice list from API...")
+        print("\nFetching invoice list from API...")
         result = self.api.search_invoices()
         if result["success"]:
             data = result["data"]
@@ -372,29 +384,29 @@ class EInvoiceIntegration:
                     return
             print(json.dumps(data, indent=2)[:2000])
         else:
-            print(f"❌ Error: {result['error']}")
+            print(f"[FAIL] Error: {result['error']}")
 
     def download_invoice(self, irn):
         """Download a specific invoice by IRN."""
-        print(f"\n📥 Downloading: {irn}")
+        print(f"\nDownloading: {irn}")
         result = self.api.download_invoice(irn)
         if result["success"]:
             filepath = f"logs/invoice_{irn}.json"
             with open(filepath, "w") as f:
                 json.dump(result["data"], f, indent=2)
-            print(f"✅ Saved: {filepath}")
+            print(f"[OK] Saved: {filepath}")
             print(json.dumps(result["data"], indent=2)[:2000])
         else:
-            print(f"❌ {result['error']}")
+            print(f"[FAIL] {result['error']}")
 
     def update_payment(self, irn, status, reference):
         """Update payment status for an invoice."""
-        print(f"\n💰 Updating {irn}: {status}")
+        print(f"\nUpdating {irn}: {status}")
         result = self.api.update_payment_status(irn, status, reference)
         if result["success"]:
-            print(f"✅ Updated: {json.dumps(result['data'], indent=2)}")
+            print(f"[OK] Updated: {json.dumps(result['data'], indent=2)}")
         else:
-            print(f"❌ {result['error']}")
+            print(f"[FAIL] {result['error']}")
 
     # ================================================================
     # TEST
@@ -403,7 +415,7 @@ class EInvoiceIntegration:
     def test_connections(self):
         """Test both API and Sage 50 connections."""
         print("\n" + "=" * 60)
-        print("  🔌 CONNECTION TEST")
+        print("  CONNECTION TEST")
         print("=" * 60)
 
         # Test API
@@ -419,24 +431,24 @@ class EInvoiceIntegration:
             customers = reader.get_customers()
             company = reader.get_company_info()
 
-            print(f"   📋 Tables accessible: ✅")
-            print(f"   📋 Sales invoices found: {len(invoices)}")
-            print(f"   📋 Customers found: {len(customers)}")
-            print(f"   📋 Company: {company.get('CompanyName', 'N/A')}")
+            print(f"   Tables accessible: OK")
+            print(f"   Sales invoices found: {len(invoices)}")
+            print(f"   Customers found: {len(customers)}")
+            print(f"   Company: {company.get('CompanyName', 'N/A')}")
 
             if invoices:
                 inv = list(invoices.values())[0]
                 print(f"\n   Sample invoice: {inv['invoice_number']}")
                 print(f"     Customer: {inv['customer_name']}")
                 print(f"     Date: {inv['date']}")
-                print(f"     Amount: ₦{inv['main_amount']:,.2f}")
+                print(f"     Amount: N{inv['main_amount']:,.2f}")
                 print(f"     Lines: {len(inv['lines'])}")
 
             reader.close()
 
         print(f"\n{'=' * 60}")
-        print(f"  API:     {'✅ OK' if api_ok else '❌ FAILED'}")
-        print(f"  Sage 50: {'✅ OK' if sage_ok else '❌ FAILED'}")
+        print(f"  API:     {'OK' if api_ok else 'FAILED'}")
+        print(f"  Sage 50: {'OK' if sage_ok else 'FAILED'}")
         print(f"{'=' * 60}\n")
 
     def submit_test_invoice(self):
@@ -476,15 +488,15 @@ class EInvoiceIntegration:
             ],
         }
 
-        print("\n🧪 Test Invoice Payload:")
+        print("\nTest Invoice Payload:")
         print(json.dumps(test_payload, indent=2))
         confirm = input("\nSubmit? (y/n): ").strip().lower()
         if confirm == "y":
             response = self.api.generate_invoice(test_payload)
             if response["success"]:
-                print(f"\n✅ SUCCESS: {json.dumps(response['data'], indent=2)}")
+                print(f"\n[OK] SUCCESS: {json.dumps(response['data'], indent=2)}")
             else:
-                print(f"\n❌ FAILED [{response['status']}]: {response['error']}")
+                print(f"\n[FAIL] [{response['status']}]: {response['error']}")
 
     # ================================================================
     # LOGGING
@@ -495,7 +507,7 @@ class EInvoiceIntegration:
         os.makedirs(os.path.dirname(SUBMISSION_LOG_FILE), exist_ok=True)
         file_exists = os.path.exists(SUBMISSION_LOG_FILE)
 
-        with open(SUBMISSION_LOG_FILE, "a", newline="") as f:
+        with open(SUBMISSION_LOG_FILE, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow([
@@ -519,7 +531,7 @@ class EInvoiceIntegration:
         """Load previously submitted invoices to avoid duplicates."""
         submitted = {}
         if os.path.exists(SUBMISSION_LOG_FILE):
-            with open(SUBMISSION_LOG_FILE, "r") as f:
+            with open(SUBMISSION_LOG_FILE, "r", encoding="utf-8-sig") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
                     if row.get("status") == "SUCCESS" and row.get("irn"):
@@ -536,20 +548,20 @@ def interactive_menu():
 
     while True:
         print("\n" + "=" * 60)
-        print("  NIGERIA E-INVOICING — SAGE 50 INTEGRATION")
+        print("  NIGERIA E-INVOICING -- SAGE 50 INTEGRATION")
         print("=" * 60)
-        print("  1.  🔌 Test Connections (API + Sage 50)")
-        print("  2.  📤 Submit Invoices from Sage 50 (ODBC)")
-        print("  3.  🧪 Dry Run — Preview Without Submitting")
-        print("  4.  📄 Submit Invoices from CSV Export")
-        print("  5.  📋 List Submitted Invoices (API)")
-        print("  6.  📥 Download Invoice by IRN")
-        print("  7.  💰 Update Payment Status")
-        print("  8.  📦 Fetch Resources (HS Codes, etc.)")
-        print("  9.  📝 Export Mapping Templates from Sage 50")
-        print("  10. 🔍 Discover Sage 50 Database")
-        print("  11. 🧪 Submit Test Invoice")
-        print("  12. ❌ Exit")
+        print("  1.  Test Connections (API + Sage 50)")
+        print("  2.  Submit Invoices from Sage 50 (ODBC)")
+        print("  3.  Dry Run -- Preview Without Submitting")
+        print("  4.  Submit Invoices from CSV Export")
+        print("  5.  List Submitted Invoices (API)")
+        print("  6.  Download Invoice by IRN")
+        print("  7.  Update Payment Status")
+        print("  8.  Fetch Resources (HS Codes, etc.)")
+        print("  9.  Export Mapping Templates from Sage 50")
+        print("  10. Discover Sage 50 Database")
+        print("  11. Submit Test Invoice")
+        print("  12. Exit")
         print()
 
         choice = input("Select (1-12): ").strip()
@@ -601,7 +613,7 @@ def interactive_menu():
             integration.submit_test_invoice()
 
         elif choice == "12":
-            print("Goodbye! 👋")
+            print("Goodbye!")
             break
 
         else:
