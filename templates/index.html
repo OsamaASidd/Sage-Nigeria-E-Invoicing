@@ -213,14 +213,24 @@
                         <td class="col-date">{{ inv.invoice_date }}</td>
                         <td>
                             <span class="badge badge-{{ inv.status }}"
-                                  {% if inv.status == 'failed' %}title="{{ inv.error_message or '' }}"{% endif %}>
+                                  {% if inv.status == 'failed' and inv.error_message %}
+                                  title="{{ inv.error_message }}"
+                                  style="cursor:help"
+                                  {% endif %}>
                                 {{ inv.status|upper }}
                             </span>
+                            {% if inv.status == 'failed' and inv.error_message %}
+                            <div style="font-size:10px;color:var(--red);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px" title="{{ inv.error_message }}">
+                                {{ inv.error_message[:60] }}
+                            </div>
+                            {% endif %}
                         </td>
                         <td class="col-amount">{{ "{:,.2f}".format(inv.amount|abs) }}</td>
                         <td class="actions-cell">
                             {% if inv.status == 'posted' %}
                                 <span style="color:var(--green);font-size:12px;font-weight:600">&#10003; Done</span>
+                            {% elif inv.status == 'failed' %}
+                                <button class="btn btn-sm" style="background:var(--red);color:white" onclick="postInvoice({{ inv.trx_number }}, this)">Retry</button>
                             {% else %}
                                 <button class="btn btn-primary btn-sm" onclick="postInvoice({{ inv.trx_number }}, this)">Post</button>
                             {% endif %}
@@ -265,7 +275,7 @@
                     <span class="page-btn disabled">&hellip;</span>
                 {% endif %}
             {% endfor %}
-            <a href="/?page={{ page + 1 }}" class="page-btn {{ 'disabled' if page >= total_pages }}"">Next &raquo;</a>
+            <a href="/?page={{ page + 1 }}" class="page-btn {{ 'disabled' if page >= total_pages }}">Next &raquo;</a>
         </div>
     </div>
     {% endif %}
@@ -299,6 +309,8 @@ function toast(message, type='info') {
 }
 
 /* ---- Set default date range to current month ---- */
+var _syncInterval = null;
+
 window.addEventListener('DOMContentLoaded', function() {
     var now = new Date();
     var y = now.getFullYear();
@@ -306,7 +318,14 @@ window.addEventListener('DOMContentLoaded', function() {
     var lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
     document.getElementById('dateFrom').value = y + '-' + m + '-01';
     document.getElementById('dateTo').value = y + '-' + m + '-' + String(lastDay).padStart(2, '0');
-    autoSync();
+
+    // Initial sync on page load
+    autoSync(true);
+
+    // Auto-resync every 5 minutes (300000ms)
+    _syncInterval = setInterval(function() {
+        autoSync(false);
+    }, 300000);
 });
 
 function getDateRange() {
@@ -316,7 +335,7 @@ function getDateRange() {
     };
 }
 
-function autoSync() {
+function autoSync(isInitial) {
     var banner = document.getElementById('syncBanner');
     var txt = document.getElementById('syncBannerText');
     var sp = document.getElementById('syncSpinner');
@@ -338,13 +357,13 @@ function autoSync() {
                 banner.className = 'sync-banner success';
                 txt.textContent = 'Synced ' + data.synced + ' invoices' +
                     (data.new > 0 ? ' (' + data.new + ' new)' : '') +
-                    ' for ' + data.date_from + ' to ' + data.date_to;
+                    ' for ' + data.date_from + ' to ' + data.date_to +
+                    ' — Next auto-sync in 5 min';
+                // Only reload if there are NEW invoices (not on every sync)
                 if (data.new > 0) {
-                    setTimeout(function() { location.reload(); }, 1000);
-                } else if (data.synced > 0) {
-                    setTimeout(function() { location.reload(); }, 1000);
+                    setTimeout(function() { location.reload(); }, 1500);
                 } else {
-                    setTimeout(function() { banner.style.display = 'none'; }, 3000);
+                    setTimeout(function() { banner.style.display = 'none'; }, 4000);
                 }
             } else {
                 banner.className = 'sync-banner error';
@@ -376,7 +395,13 @@ function syncSage() {
         .then(function(data) {
             if (data.ok) {
                 toast('Synced ' + data.synced + ' invoices (' + data.new + ' new) for ' + data.date_from + ' to ' + data.date_to, 'success');
-                setTimeout(function() { location.reload(); }, 800);
+                if (data.new > 0) {
+                    setTimeout(function() { location.reload(); }, 800);
+                } else {
+                    resetSyncBtn();
+                    // Reload anyway on manual sync to show updated data
+                    setTimeout(function() { location.reload(); }, 800);
+                }
             } else {
                 toast('Sync failed: ' + data.error, 'error');
                 resetSyncBtn();
@@ -404,15 +429,19 @@ function postInvoice(trx, btnEl) {
                 toast('Posted! IRN: ' + data.irn, 'success');
                 setTimeout(function() { location.reload(); }, 800);
             } else {
-                toast('Failed: ' + data.error, 'error');
+                var errMsg = data.error || 'Unknown error';
+                toast('Failed: ' + errMsg, 'error');
                 btnEl.disabled = false;
                 btnEl.innerHTML = 'Retry';
+                btnEl.title = errMsg;
+                console.error('Post TRX ' + trx + ' failed:', errMsg);
             }
         })
         .catch(function(e) {
             toast('Error: ' + e.message, 'error');
             btnEl.disabled = false;
             btnEl.innerHTML = 'Retry';
+            console.error('Post TRX ' + trx + ' exception:', e);
         });
 }
 

@@ -127,6 +127,7 @@ def init_db():
                     qr_code          TEXT,
                     posted_at        TEXT,
                     error_message    TEXT,
+                    invoice_description TEXT,
                     last_synced      TEXT
                 )
             """)
@@ -143,6 +144,12 @@ def init_db():
                 )
             """)
             conn.commit()
+            # Migration: add invoice_description if missing
+            try:
+                conn.execute("ALTER TABLE invoices ADD COLUMN invoice_description TEXT")
+                conn.commit()
+            except:
+                pass  # Column already exists
         finally:
             conn.close()
 
@@ -291,12 +298,12 @@ def sync_headers_from_sage(date_from=None, date_to=None):
                     invoice_num=?, customer_name=?, customer_id=?,
                     customer_tin=?, customer_email=?, customer_phone=?,
                     customer_address=?, customer_city=?,
-                    invoice_date=?, amount=?, last_synced=?
+                    invoice_date=?, amount=?, invoice_description=?, last_synced=?
                 WHERE trx_number=?
             """, (inv_num, cust_name, cust.get("id", ""), cust.get("tin", ""),
                   cust.get("email", ""), cust.get("phone", ""),
                   addr.get("address", ""), addr.get("city", ""),
-                  tx_date_str, main_amt, now, trx_num)))
+                  tx_date_str, main_amt, desc, now, trx_num)))
         else:
             new_count += 1
             operations.append(("""
@@ -304,12 +311,12 @@ def sync_headers_from_sage(date_from=None, date_to=None):
                     (trx_number, invoice_num, customer_name, customer_id,
                      customer_tin, customer_email, customer_phone,
                      customer_address, customer_city,
-                     invoice_date, amount, status, last_synced)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?)
+                     invoice_date, amount, status, invoice_description, last_synced)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)
             """, (trx_num, inv_num, cust_name, cust.get("id", ""),
                   cust.get("tin", ""), cust.get("email", ""),
                   cust.get("phone", ""), addr.get("address", ""),
-                  addr.get("city", ""), tx_date_str, main_amt, now)))
+                  addr.get("city", ""), tx_date_str, main_amt, desc, now)))
 
     if operations:
         db_write_many(operations)
@@ -320,25 +327,72 @@ def sync_headers_from_sage(date_from=None, date_to=None):
 
 # ============================================================
 # SAGE 50 - LINE ITEMS (on-demand when posting)
+# Copied from working test_submit.py approach with fallback
+# for simple service invoices that have no JrnlRow detail
 # ============================================================
 
 def fetch_line_items(trx_number):
+    """
+    Fetch line items from Sage 50 for a specific transaction.
+    Returns (lines, error_msg).
+
+    Strategy (same as test_submit.py):
+      1. Discover JrnlRow columns dynamically
+      2. Find the real FK column (probe if needed)
+      3. Build LineItem lookup for item descriptions
+      4. Query JrnlRow and filter usable lines
+    """
     try:
         sage = pyodbc.connect(ODBC_CONN)
-    except:
-        return []
+    except Exception as e:
+        print(f"[POST ERROR] ODBC connection failed for TRX {trx_number}: {e}")
+        return [], f"ODBC connection failed: {e}"
 
     try:
         cursor = sage.cursor()
-        jrnlrow_cols = get_columns(cursor, "JrnlRow")
-        lineitem_cols = get_columns(cursor, "LineItem")
 
+        # ---- Step 1: Discover columns (same as test_submit.py) ----
+        jrnlrow_cols = [c.column_name for c in cursor.columns(table="JrnlRow")]
+        lineitem_cols = [c.column_name for c in cursor.columns(table="LineItem")]
+
+        print(f"[POST] TRX {trx_number}: JrnlRow {len(jrnlrow_cols)} cols, LineItem {len(lineitem_cols)} cols")
+
+        # ---- Step 2: Find FK column (robust probing like test_submit.py) ----
         jrnlrow_fk = find_col(jrnlrow_cols,
             "JrnlKey_TrxNumber", "Journal", "JournalKey",
             "TrxNumber", "TransactionNumber")
-        if not jrnlrow_fk:
-            return []
 
+        # If found but returns 0 rows, probe ALL columns (test_submit.py fallback)
+        if jrnlrow_fk:
+            try:
+                cursor.execute(f'SELECT COUNT(*) FROM "JrnlRow" WHERE "{jrnlrow_fk}" = {trx_number}')
+                test_count = cursor.fetchone()[0]
+                if test_count == 0:
+                    print(f"[POST] TRX {trx_number}: FK '{jrnlrow_fk}' returned 0 rows, probing all columns...")
+                    jrnlrow_fk = None  # Force probe
+            except:
+                jrnlrow_fk = None
+
+        if not jrnlrow_fk:
+            print(f"[POST] TRX {trx_number}: Probing every JrnlRow column for match...")
+            for candidate in jrnlrow_cols:
+                try:
+                    cursor.execute(f'SELECT COUNT(*) FROM "JrnlRow" WHERE "{candidate}" = ?', (trx_number,))
+                    count = cursor.fetchone()[0]
+                    if count > 0:
+                        print(f"[POST]   [HIT] {candidate} = {trx_number} -> {count} rows")
+                        jrnlrow_fk = candidate
+                        break
+                except:
+                    pass
+
+        if not jrnlrow_fk:
+            print(f"[POST] TRX {trx_number}: No FK column found with matching rows")
+            return [], None  # Return None error = "use header fallback"
+
+        print(f"[POST] TRX {trx_number}: Using FK column '{jrnlrow_fk}'")
+
+        # ---- Step 3: Map JrnlRow data columns ----
         jr_amount = find_col(jrnlrow_cols, "Amount")
         jr_qty = find_col(jrnlrow_cols, "Quantity", "StockingQuantity")
         jr_price = find_col(jrnlrow_cols, "UnitCost", "UnitPrice", "StockingUnitCost")
@@ -346,65 +400,119 @@ def fetch_line_items(trx_number):
                            "ItemDescription", "LineDescription", "Memo")
         jr_itemrec = find_col(jrnlrow_cols, "ItemRecordNumber")
 
+        print(f"[POST] TRX {trx_number}: Cols Amt={jr_amount} Qty={jr_qty} Price={jr_price} "
+              f"Desc={jr_desc} ItemRec={jr_itemrec}")
+
+        # ---- Step 3b: Additional columns (same as test_submit.py) ----
+        jr_glacct = find_col(jrnlrow_cols, "GLAcntNumber")
+        jr_rownum = find_col(jrnlrow_cols, "RowNumber")
+
+        # ---- Step 4: Build LineItem lookup ----
         li_recnum = find_col(lineitem_cols, "ItemRecordNumber", "RecordNumber")
         li_itemid = find_col(lineitem_cols, "ItemID")
         li_desc = find_col(lineitem_cols, "ItemDescription", "Description", "SalesDescription")
+        li_price = find_col(lineitem_cols, "SalesPrice1", "SalesPrice", "Price",
+                            "UnitPrice", "Cost")
 
         item_lookup = {}
         if li_recnum and li_itemid:
             select_parts = [li_recnum, li_itemid]
             if li_desc:
                 select_parts.append(li_desc)
+            if li_price:
+                select_parts.append(li_price)
             try:
                 cursor.execute(f'SELECT {", ".join(select_parts)} FROM "LineItem" WHERE {li_itemid} <> \'\'')
                 for row in cursor.fetchall():
+                    idx = 2
+                    desc_val = ""
+                    price_val = 0
+                    if li_desc:
+                        desc_val = to_str(row[idx])
+                        idx += 1
+                    if li_price and idx < len(row):
+                        price_val = to_float(row[idx])
                     item_lookup[row[0]] = {
                         "item_id": to_str(row[1]),
-                        "description": to_str(row[2]) if li_desc else "",
+                        "description": desc_val,
+                        "price": price_val,
                     }
-            except:
-                pass
+                print(f"[POST] TRX {trx_number}: Loaded {len(item_lookup)} items from LineItem")
+            except Exception as e:
+                print(f"[POST WARN] TRX {trx_number}: LineItem query failed: {e}")
+                # Minimal fallback - just ID
+                try:
+                    cursor.execute(f'SELECT {li_recnum}, {li_itemid} FROM "LineItem" WHERE {li_itemid} <> \'\'')
+                    for row in cursor.fetchall():
+                        item_lookup[row[0]] = {"item_id": to_str(row[1]), "description": "", "price": 0}
+                    print(f"[POST] TRX {trx_number}: Loaded {len(item_lookup)} items (ID only)")
+                except:
+                    pass
 
+        # ---- Step 5: Fetch line items (same as test_submit.py fetch_lines) ----
         jr_select = []
+        if jr_glacct: jr_select.append(jr_glacct)
         if jr_amount: jr_select.append(jr_amount)
         if jr_qty: jr_select.append(jr_qty)
         if jr_price: jr_select.append(jr_price)
+        if jr_rownum: jr_select.append(jr_rownum)
         if jr_itemrec: jr_select.append(jr_itemrec)
         if jr_desc: jr_select.append(jr_desc)
 
+        if not jr_select:
+            return [], "No usable data columns in JrnlRow"
+
+        query = f'SELECT {", ".join(jr_select)} FROM "JrnlRow" WHERE "{jrnlrow_fk}" = {trx_number}'
+        print(f"[POST] TRX {trx_number}: {query}")
+
         lines = []
-        if jr_select:
-            try:
-                cursor.execute(
-                    f'SELECT {", ".join(jr_select)} FROM "JrnlRow" WHERE "{jrnlrow_fk}" = {trx_number}'
-                )
-                rc = [c[0] for c in cursor.description]
-                for lr in cursor.fetchall():
-                    ld = dict(zip(rc, lr))
-                    qty = to_float(ld.get(jr_qty, 0)) if jr_qty else 0
-                    amount = to_float(ld.get(jr_amount, 0)) if jr_amount else 0
-                    unit_cost = to_float(ld.get(jr_price, 0)) if jr_price else 0
-                    item_recnum = ld.get(jr_itemrec, 0) if jr_itemrec else 0
-                    row_desc = to_str(ld.get(jr_desc, "")) if jr_desc else ""
+        cursor.execute(query)
+        rc = [c[0] for c in cursor.description]
+        all_rows = cursor.fetchall()
+        print(f"[POST] TRX {trx_number}: Got {len(all_rows)} JrnlRow entries")
 
-                    item_info = item_lookup.get(item_recnum, {})
-                    item_id = item_info.get("item_id", "")
-                    item_desc = item_info.get("description", "")
-                    line_desc = row_desc or item_desc or item_id or ""
-                    unit_price = abs(unit_cost) if unit_cost != 0 else abs(amount)
+        for lr in all_rows:
+            ld = dict(zip(rc, lr))
+            qty = to_float(ld.get(jr_qty, 0)) if jr_qty else 0
+            amount = to_float(ld.get(jr_amount, 0)) if jr_amount else 0
+            unit_cost = to_float(ld.get(jr_price, 0)) if jr_price else 0
+            item_recnum = ld.get(jr_itemrec, 0) if jr_itemrec else 0
+            row_desc = to_str(ld.get(jr_desc, "")) if jr_desc else ""
 
-                    if (qty != 0 or item_recnum > 0) and unit_price > 0:
-                        lines.append({
-                            "item_code": item_id or str(item_recnum),
-                            "description": line_desc or "Service",
-                            "quantity": abs(qty) if qty != 0 else 1,
-                            "unit_price": unit_price,
-                            "amount": abs(qty if qty != 0 else 1) * unit_price,
-                        })
-            except:
-                pass
+            item_info = item_lookup.get(item_recnum, {})
+            item_id = item_info.get("item_id", "")
+            item_desc = item_info.get("description", "")
+            sales_price = item_info.get("price", 0)
+            line_desc = row_desc or item_desc or item_id or ""
+            unit_price = abs(unit_cost) if unit_cost != 0 else (
+                sales_price if sales_price > 0 else abs(amount)
+            )
 
-        return lines
+            # Same logic as test_submit.py: keep if qty or linked item
+            # Zero-price filtering happens later in API payload building
+            kept = (qty != 0 or item_recnum > 0)
+            print(f"[POST]   Row: ItemRec={item_recnum} Qty={qty} Price={unit_cost} "
+                  f"Amt={amount} Desc={line_desc[:40]!r} -> {'KEEP' if kept else 'SKIP'}")
+
+            if kept:
+                lines.append({
+                    "item_code": item_id or str(item_recnum),
+                    "description": line_desc or "Service",
+                    "quantity": abs(qty) if qty != 0 else 1,
+                    "unit_price": unit_price,
+                    "amount": abs(qty if qty != 0 else 1) * unit_price,
+                })
+
+        if lines:
+            print(f"[POST] TRX {trx_number}: Returning {len(lines)} line items from JrnlRow")
+        else:
+            print(f"[POST] TRX {trx_number}: 0 usable lines from {len(all_rows)} JrnlRow entries")
+
+        return lines, None
+
+    except Exception as e:
+        print(f"[POST ERROR] TRX {trx_number}: Exception: {e}")
+        return [], str(e)
     finally:
         sage.close()
 
@@ -416,13 +524,39 @@ def fetch_line_items(trx_number):
 def post_to_firs(trx_number):
     inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
     if not inv:
-        return {"ok": False, "error": "Invoice not found"}
+        return {"ok": False, "error": "Invoice not found in local database"}
     if inv["status"] == "posted":
         return {"ok": False, "error": "Already posted", "irn": inv["irn"]}
 
-    lines = fetch_line_items(trx_number)
+    print(f"\n[POST] === Posting TRX {trx_number} ({inv['invoice_num']}) ===")
+
+    lines, line_error = fetch_line_items(trx_number)
+
+    # ---- FALLBACK: Simple service invoices without JrnlRow detail ----
+    # Many Sage 50 service invoices have NO JrnlRow entries at all.
+    # In that case, create a single line from the header data.
     if not lines:
-        return {"ok": False, "error": "No line items found in Sage 50."}
+        amt = abs(to_float(inv["amount"]))
+        if amt > 0:
+            # Use the JrnlHdr Description (stored during sync) for the line item name
+            sage_desc = to_str(inv.get("invoice_description", "")) or to_str(inv.get("customer_name", ""))
+            inv_num = inv["invoice_num"] or f"TRX-{trx_number}"
+            line_name = sage_desc if sage_desc else "Security Services"
+            print(f"[POST] TRX {trx_number}: No JrnlRow detail - using header fallback: "
+                  f"'{line_name}' N{amt:,.2f}")
+            lines = [{
+                "item_code": inv_num,
+                "description": line_name,
+                "quantity": 1,
+                "unit_price": amt,
+                "amount": amt,
+            }]
+        else:
+            error_msg = line_error or "No line items and zero invoice amount"
+            print(f"[POST FAIL] TRX {trx_number}: {error_msg}")
+            db_write("UPDATE invoices SET status='failed', error_message=? WHERE trx_number=?",
+                     (error_msg[:500], trx_number))
+            return {"ok": False, "error": error_msg}
 
     ops = [("DELETE FROM invoice_lines WHERE trx_number=?", (trx_number,))]
     for i, line in enumerate(lines):
@@ -480,6 +614,10 @@ def post_to_firs(trx_number):
         "invoice_line": api_lines,
     }
 
+    print(f"[POST] TRX {trx_number}: Submitting {len(api_lines)} lines to API...")
+    print(f"[POST] TRX {trx_number}: document_identifier={payload['document_identifier']} "
+          f"customer={payload['accounting_customer_party']['party_name']}")
+
     try:
         resp = requests.post(
             f"{API_URL}/invoice/generate",
@@ -491,10 +629,13 @@ def post_to_firs(trx_number):
         except:
             pass
 
+        print(f"[POST] TRX {trx_number}: API status={resp.status_code}")
+
         if resp.status_code in (200, 201):
             data = resp_json.get("data", resp_json)
             irn = data.get("irn", "N/A")
             qr_code = data.get("qr_code", "")
+            print(f"[POST] TRX {trx_number}: SUCCESS! IRN={irn}")
             db_write("""
                 UPDATE invoices SET status='posted', irn=?, qr_code=?,
                     posted_at=?, error_message=NULL
@@ -502,8 +643,32 @@ def post_to_firs(trx_number):
             """, (irn, qr_code, datetime.now().isoformat(), trx_number))
             generate_pdf(trx_number)
             return {"ok": True, "irn": irn, "status": "posted"}
+
+        elif resp.status_code == 409:
+            # Invoice already exists on FIRS - extract IRN/QR and mark as posted
+            errors = resp_json.get("errors", {})
+            irn = errors.get("irn", resp_json.get("irn", ""))
+            qr_code = errors.get("qr_code", resp_json.get("qr_code", ""))
+            if irn:
+                print(f"[POST] TRX {trx_number}: Already exists on FIRS, marking as posted. IRN={irn}")
+                db_write("""
+                    UPDATE invoices SET status='posted', irn=?, qr_code=?,
+                        posted_at=?, error_message=NULL
+                    WHERE trx_number=?
+                """, (irn, qr_code, datetime.now().isoformat(), trx_number))
+                generate_pdf(trx_number)
+                return {"ok": True, "irn": irn, "status": "posted",
+                        "note": "Already existed on FIRS"}
+            else:
+                error_msg = resp_json.get("message", "Invoice already exists (409)")
+                print(f"[POST] TRX {trx_number}: 409 but no IRN found: {error_msg}")
+                db_write("UPDATE invoices SET status='failed', error_message=? WHERE trx_number=?",
+                         (error_msg[:500], trx_number))
+                return {"ok": False, "error": error_msg}
+
         else:
             error_msg = resp_json.get("message", resp.text[:300])
+            print(f"[POST FAIL] TRX {trx_number}: API {resp.status_code}: {error_msg[:200]}")
             db_write("""
                 UPDATE invoices SET status='failed', error_message=?
                 WHERE trx_number=?
@@ -511,10 +676,12 @@ def post_to_firs(trx_number):
             return {"ok": False, "error": error_msg}
 
     except requests.exceptions.ConnectionError as e:
+        print(f"[POST ERROR] TRX {trx_number}: Connection failed: {e}")
         db_write("UPDATE invoices SET status='failed', error_message=? WHERE trx_number=?",
                  (f"Connection error: {str(e)[:200]}", trx_number))
         return {"ok": False, "error": f"Connection failed: {e}"}
     except Exception as e:
+        print(f"[POST ERROR] TRX {trx_number}: Exception: {e}")
         return {"ok": False, "error": str(e)}
 
 
@@ -730,6 +897,38 @@ def api_post_bulk():
     posted = sum(1 for r in results if r.get("ok"))
     failed = len(results) - posted
     return jsonify({"ok": True, "posted": posted, "failed": failed, "details": results})
+
+
+@app.route("/api/stats")
+def api_stats():
+    """Return current stats without page reload."""
+    try:
+        all_stats = db_read("SELECT status, COUNT(*) as cnt FROM invoices GROUP BY status")
+        stats = {"total": 0, "posted": 0, "pending": 0, "failed": 0}
+        for s in all_stats:
+            stats[s["status"]] = s["cnt"]
+            stats["total"] += s["cnt"]
+        return jsonify({"ok": True, **stats})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/debug-lines/<int:trx_number>")
+def api_debug_lines(trx_number):
+    """Debug endpoint: show what fetch_line_items returns for a TRX number."""
+    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
+    lines, error = fetch_line_items(trx_number)
+    return jsonify({
+        "trx_number": trx_number,
+        "invoice": {
+            "invoice_num": inv["invoice_num"] if inv else None,
+            "customer_name": inv["customer_name"] if inv else None,
+            "status": inv["status"] if inv else None,
+        } if inv else None,
+        "lines_found": len(lines),
+        "lines": lines[:20],  # First 20 for display
+        "error": error,
+    })
 
 
 @app.route("/download/<int:trx_number>")
