@@ -3,489 +3,455 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>E-Invoicing | Proton Security Services</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <title>E-Invoicing Dashboard</title>
     <style>
+        :root { --navy: #0f172a; --blue: #2563eb; --green: #16a34a; --red: #dc2626;
+            --amber: #d97706; --slate50: #f8fafc; --slate100: #f1f5f9; --slate200: #e2e8f0;
+            --slate400: #94a3b8; --slate500: #64748b; --slate600: #475569; --slate800: #1e293b; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --navy: #0f172a; --blue: #2563eb; --blue-light: #3b82f6; --blue-bg: #eff6ff;
-            --green: #16a34a; --green-bg: #f0fdf4; --green-border: #bbf7d0;
-            --red: #dc2626; --red-bg: #fef2f2; --red-border: #fecaca;
-            --amber: #d97706; --amber-bg: #fffbeb; --amber-border: #fde68a;
-            --slate50: #f8fafc; --slate100: #f1f5f9; --slate200: #e2e8f0;
-            --slate300: #cbd5e1; --slate400: #94a3b8; --slate500: #64748b;
-            --slate600: #475569; --slate700: #334155; --slate800: #1e293b;
-            --radius: 8px;
-            --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
-            --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.08);
-        }
-        body { font-family: 'DM Sans', -apple-system, sans-serif; background: var(--slate50); color: var(--slate800); min-height: 100vh; }
-
-        .header { background: var(--navy); color: white; padding: 0 32px; height: 64px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-        .header-left { display: flex; align-items: center; gap: 14px; }
-        .header-logo { width: 36px; height: 36px; background: var(--blue); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 14px; }
-        .header-title { font-size: 16px; font-weight: 600; }
-        .header-subtitle { font-size: 12px; color: var(--slate400); }
-        .header-env { font-family: 'JetBrains Mono', monospace; font-size: 11px; background: rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 4px; color: var(--amber); }
-
-        .sync-banner { background: var(--blue-bg); border-bottom: 1px solid #bfdbfe; color: var(--blue); padding: 10px 32px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
-        .sync-banner.success { background: var(--green-bg); border-color: var(--green-border); color: var(--green); }
-        .sync-banner.error { background: var(--red-bg); border-color: var(--red-border); color: var(--red); }
-        .spinner-sm { width: 14px; height: 14px; border: 2px solid #bfdbfe; border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; }
-
-        .stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 24px 32px; max-width: 1400px; margin: 0 auto; }
-        .stat-card { background: white; border-radius: var(--radius); padding: 20px 24px; border: 1px solid var(--slate200); box-shadow: var(--shadow); }
-        .stat-label { font-size: 12px; font-weight: 500; color: var(--slate500); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-        .stat-value { font-size: 28px; font-weight: 700; letter-spacing: -1px; color: var(--slate800); }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--slate100); color: var(--slate800); }
+        .header { background: var(--navy); color: white; padding: 0 24px; height: 56px; display: flex; align-items: center; justify-content: space-between; }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .header-logo { width: 32px; height: 32px; background: var(--green); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+        .header-title { font-size: 15px; font-weight: 600; }
+        .header-subtitle { font-size: 11px; opacity: 0.7; }
+        .header-env { background: var(--amber); color: white; font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 4px; }
+        .stats-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 20px 24px 0; }
+        .stat-card { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+        .stat-label { font-size: 11px; color: var(--slate500); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 28px; font-weight: 700; margin-top: 4px; }
         .stat-card.posted .stat-value { color: var(--green); }
         .stat-card.pending .stat-value { color: var(--amber); }
         .stat-card.failed .stat-value { color: var(--red); }
-
-        .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 0 32px 16px; max-width: 1400px; margin: 0 auto; flex-wrap: wrap; gap: 10px; }
-        .toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-        .toolbar-right { display: flex; align-items: center; gap: 10px; }
-        .search-box { position: relative; }
-        .search-box input { font-family: 'DM Sans', sans-serif; padding: 8px 14px 8px 36px; border: 1px solid var(--slate300); border-radius: 6px; font-size: 13px; width: 220px; outline: none; background: white; }
-        .search-box input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
-        .search-box svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--slate400); }
-        .date-range { display: flex; align-items: center; gap: 6px; }
-        .date-range label { font-size: 12px; font-weight: 500; color: var(--slate500); }
-        .date-range input[type="date"] { font-family: 'DM Sans', sans-serif; padding: 7px 10px; border: 1px solid var(--slate300); border-radius: 6px; font-size: 12px; background: white; outline: none; color: var(--slate700); }
-        .date-range input[type="date"]:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
-
-        .btn { font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600; padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: all 0.15s; white-space: nowrap; text-decoration: none; }
+        .toolbar { display: flex; align-items: center; gap: 10px; padding: 16px 24px; flex-wrap: wrap; }
+        .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid var(--slate200); border-radius: 6px; background: white; font-size: 13px; cursor: pointer; font-weight: 500; transition: all 0.15s; }
+        .btn:hover { background: var(--slate50); }
+        .btn-primary { background: var(--blue); color: white; border-color: var(--blue); }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-primary { background: var(--blue); color: white; }
-        .btn-primary:hover:not(:disabled) { background: var(--blue-light); }
-        .btn-outline { background: white; color: var(--slate700); border: 1px solid var(--slate300); }
-        .btn-outline:hover:not(:disabled) { background: var(--slate50); }
-        .btn-success { background: var(--green); color: white; }
-        .btn-success:hover:not(:disabled) { background: #15803d; }
-        .btn-sm { font-size: 12px; padding: 5px 10px; }
-
-        .table-wrap { padding: 0 32px 16px; max-width: 1400px; margin: 0 auto; }
-        .table-container { background: white; border-radius: var(--radius); border: 1px solid var(--slate200); box-shadow: var(--shadow); overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        thead { background: var(--slate50); border-bottom: 1px solid var(--slate200); }
-        th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--slate500); padding: 12px 14px; white-space: nowrap; }
-        td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--slate100); vertical-align: middle; }
-        tr:last-child td { border-bottom: none; }
-        tr:hover td { background: var(--slate50); }
-        .col-mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; }
-        .col-amount { font-family: 'JetBrains Mono', monospace; font-size: 12px; text-align: right; font-weight: 600; }
-        .col-customer { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-        .col-custid { font-size: 12px; color: var(--slate600); }
-        .col-date { font-size: 12px; color: var(--slate600); white-space: nowrap; }
-
-        .badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; display: inline-block; }
-        .badge-posted { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-        .badge-pending { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-border); }
-        .badge-failed { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
-
-        .actions-cell { white-space: nowrap; text-align: center; }
-        .actions-cell .btn { min-width: 80px; justify-content: center; }
-
-        /* Pagination */
-        .pagination { display: flex; align-items: center; justify-content: space-between; padding: 0 32px 32px; max-width: 1400px; margin: 0 auto; }
-        .page-info { font-size: 13px; color: var(--slate500); }
-        .page-buttons { display: flex; gap: 4px; }
-        .page-btn { font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; padding: 6px 12px; border: 1px solid var(--slate300); border-radius: 6px; background: white; cursor: pointer; color: var(--slate700); text-decoration: none; }
-        .page-btn:hover { background: var(--slate50); }
-        .page-btn.active { background: var(--blue); color: white; border-color: var(--blue); }
-        .page-btn.disabled { opacity: 0.4; pointer-events: none; }
-
-        .toast-container { position: fixed; top: 76px; right: 24px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
-        .toast { background: white; border: 1px solid var(--slate200); border-radius: 8px; padding: 12px 20px; font-size: 13px; box-shadow: var(--shadow-md); display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; min-width: 300px; }
-        .toast.success { border-left: 3px solid var(--green); }
-        .toast.error { border-left: 3px solid var(--red); }
-        .toast.info { border-left: 3px solid var(--blue); }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-
+        input[type="date"] { padding: 7px 10px; border: 1px solid var(--slate200); border-radius: 6px; font-size: 13px; }
+        .table-wrap { padding: 0 24px 20px; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+        th { background: var(--slate50); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--slate500); padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--slate200); }
+        td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--slate100); }
+        tr:hover { background: var(--slate50); }
+        .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+        .badge-posted { background: #dcfce7; color: #166534; }
+        .badge-pending { background: #fef3c7; color: #92400e; }
+        .badge-failed { background: #fee2e2; color: #991b1b; }
+        .error-text { font-size: 10px; color: var(--red); max-width: 200px; display: block; margin-top: 3px; }
+        .pagination { display: flex; justify-content: center; gap: 6px; padding: 0 24px 20px; }
+        .pagination a, .pagination span { padding: 6px 12px; border-radius: 6px; font-size: 13px; text-decoration: none; border: 1px solid var(--slate200); color: var(--slate600); }
+        .pagination .active { background: var(--blue); color: white; border-color: var(--blue); }
+        .sync-banner { padding: 10px 24px; background: #dcfce7; color: #166534; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+        .sync-banner.error { background: #fee2e2; color: #991b1b; }
         .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; }
-        .spinner-dark { border-color: rgba(0,0,0,0.1); border-top-color: var(--slate600); }
+        .spinner-dark { border-color: var(--slate200); border-top-color: var(--slate600); }
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        .empty-state { text-align: center; padding: 60px 20px; color: var(--slate500); }
-        .empty-state h3 { font-size: 16px; color: var(--slate700); margin-bottom: 6px; }
-        .empty-state p { font-size: 13px; margin-bottom: 20px; }
-
-        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 200; align-items: center; justify-content: center; }
+        #toasts { position: fixed; top: 16px; right: 16px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
+        .toast { background: white; padding: 12px 16px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-size: 13px; display: flex; align-items: center; gap: 8px; animation: slideIn 0.3s; max-width: 400px; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } }
+        .actions-cell { white-space: nowrap; display: flex; gap: 4px; align-items: center; }
+        /* JSON Preview Modal */
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; align-items: center; justify-content: center; }
         .modal-overlay.active { display: flex; }
-        .modal { background: white; border-radius: 12px; padding: 28px; max-width: 500px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
-        .modal h3 { font-size: 16px; margin-bottom: 8px; }
-        .modal p { font-size: 13px; color: var(--slate600); margin-bottom: 20px; line-height: 1.5; }
-        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
-
-        @media (max-width: 900px) {
-            .stats-bar { grid-template-columns: repeat(2, 1fr); padding: 16px; }
-            .toolbar, .table-wrap, .pagination { padding-left: 16px; padding-right: 16px; }
-            .header { padding: 0 16px; }
-        }
+        .modal { background: white; border-radius: 12px; padding: 24px; max-width: 800px; width: 95%; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        .modal h3 { font-size: 16px; margin-bottom: 4px; }
+        .modal-subtitle { font-size: 12px; color: var(--slate500); margin-bottom: 16px; }
+        .modal-body { flex: 1; overflow: auto; }
+        .modal-body pre { background: var(--navy); color: #e2e8f0; padding: 16px; border-radius: 8px; font-size: 12px; line-height: 1.5; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+        .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+        .btn-ghost { background: none; border: 1px solid var(--slate200); color: var(--slate600); padding: 5px 10px; font-size: 12px; border-radius: 4px; cursor: pointer; }
+        .btn-ghost:hover { background: var(--slate50); }
+        .preview-info { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; background: var(--slate50); padding: 10px; border-radius: 6px; font-size: 12px; }
+        .preview-info dt { color: var(--slate500); font-size: 10px; text-transform: uppercase; }
+        .preview-info dd { font-weight: 600; margin: 0; }
     </style>
 </head>
 <body>
 
-    <header class="header">
-        <div class="header-left">
-            <div class="header-logo">PS</div>
-            <div>
-                <div class="header-title">E-Invoicing Dashboard</div>
-                <div class="header-subtitle">Proton Security Services Ltd</div>
-            </div>
+<header class="header">
+    <div class="header-left">
+        <div class="header-logo">PS</div>
+        <div>
+            <div class="header-title">E-Invoicing Dashboard</div>
+            <div class="header-subtitle">Proton Security Services Ltd</div>
         </div>
+    </div>
+    <div class="header-right">
+        <button class="btn-ghost" onclick="openSettings()" title="Tax Category Settings" style="font-size:18px;padding:4px 8px">&#9881;</button>
         <span class="header-env">PREPROD</span>
-    </header>
-
-    <!-- Auto-sync banner -->
-    <div class="sync-banner" id="syncBanner" style="display:none">
-        <span class="spinner-sm" id="syncSpinner"></span>
-        <span id="syncBannerText">Syncing invoices from Sage 50...</span>
     </div>
+</header>
 
-    <div class="stats-bar">
-        <div class="stat-card">
-            <div class="stat-label">Total Invoices</div>
-            <div class="stat-value" id="statTotal">{{ stats.total }}</div>
-        </div>
-        <div class="stat-card posted">
-            <div class="stat-label">Posted to FIRS</div>
-            <div class="stat-value" id="statPosted">{{ stats.posted }}</div>
-        </div>
-        <div class="stat-card pending">
-            <div class="stat-label">Pending</div>
-            <div class="stat-value" id="statPending">{{ stats.pending }}</div>
-        </div>
-        <div class="stat-card failed">
-            <div class="stat-label">Failed</div>
-            <div class="stat-value" id="statFailed">{{ stats.failed }}</div>
-        </div>
-    </div>
+<div class="sync-banner" id="syncBanner" style="display:none">
+    <span class="spinner spinner-dark" id="syncSpinner"></span>
+    <span id="syncBannerText">Syncing invoices from Sage 50...</span>
+</div>
 
-    <div class="toolbar">
-        <div class="toolbar-left">
-            <div class="date-range">
-                <label>From</label>
-                <input type="date" id="dateFrom" value="">
-                <label>To</label>
-                <input type="date" id="dateTo" value="">
-            </div>
-            <div class="search-box">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                <input type="text" id="searchInput" placeholder="Search invoices..." oninput="filterTable()">
-            </div>
-        </div>
-        <div class="toolbar-right">
-            <button class="btn btn-outline" onclick="syncSage()" id="btnSync">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                Sync Date Range
-            </button>
-            <button class="btn btn-primary" onclick="postAllPending()" id="btnPostAll">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                Post All Pending
-            </button>
-        </div>
-    </div>
+<div class="stats-bar">
+    <div class="stat-card"><div class="stat-label">Total Invoices</div><div class="stat-value">{{ stats.total }}</div></div>
+    <div class="stat-card posted"><div class="stat-label">Posted to FIRS</div><div class="stat-value">{{ stats.posted }}</div></div>
+    <div class="stat-card pending"><div class="stat-label">Pending</div><div class="stat-value">{{ stats.pending }}</div></div>
+    <div class="stat-card failed"><div class="stat-label">Failed</div><div class="stat-value">{{ stats.failed }}</div></div>
+</div>
 
-    <div class="table-wrap">
-        <div class="table-container">
-            {% if invoices %}
-            <table id="invoiceTable">
-                <thead>
-                    <tr>
-                        <th>Customer Name</th>
-                        <th>Customer ID</th>
-                        <th>Invoice No.</th>
-                        <th>Date</th>
-                        <th>Status</th>
-                        <th style="text-align:right">Invoice Total</th>
-                        <th style="text-align:center">Post to FIRS</th>
-                        <th style="text-align:center">Download PDF</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for inv in invoices %}
-                    <tr data-trx="{{ inv.trx_number }}" data-status="{{ inv.status }}"
-                        data-search="{{ inv.invoice_num|lower }} {{ inv.customer_name|lower }} {{ inv.customer_id|lower }}">
-                        <td class="col-customer" title="{{ inv.customer_name }}">{{ inv.customer_name }}</td>
-                        <td class="col-custid">{{ inv.customer_id or '—' }}</td>
-                        <td class="col-mono">{{ inv.invoice_num or ('TRX-' ~ inv.trx_number) }}</td>
-                        <td class="col-date">{{ inv.invoice_date }}</td>
-                        <td>
-                            <span class="badge badge-{{ inv.status }}"
-                                  {% if inv.status == 'failed' and inv.error_message %}
-                                  title="{{ inv.error_message }}"
-                                  style="cursor:help"
-                                  {% endif %}>
-                                {{ inv.status|upper }}
-                            </span>
-                            {% if inv.status == 'failed' and inv.error_message %}
-                            <div style="font-size:10px;color:var(--red);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px" title="{{ inv.error_message }}">
-                                {{ inv.error_message[:60] }}
-                            </div>
-                            {% endif %}
-                        </td>
-                        <td class="col-amount">{{ "{:,.2f}".format(inv.amount|abs) }}</td>
-                        <td class="actions-cell">
-                            {% if inv.status == 'posted' %}
-                                <span style="color:var(--green);font-size:12px;font-weight:600">&#10003; Done</span>
-                            {% elif inv.status == 'failed' %}
-                                <button class="btn btn-sm" style="background:var(--red);color:white" onclick="postInvoice({{ inv.trx_number }}, this)">Retry</button>
-                            {% else %}
-                                <button class="btn btn-primary btn-sm" onclick="postInvoice({{ inv.trx_number }}, this)">Post</button>
-                            {% endif %}
-                        </td>
-                        <td class="actions-cell">
-                            {% if inv.status == 'posted' %}
-                                <a href="/download/{{ inv.trx_number }}" class="btn btn-success btn-sm">PDF &darr;</a>
-                            {% else %}
-                                <span style="color:var(--slate400);font-size:12px">&mdash;</span>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            {% else %}
-            <div class="empty-state">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--slate300)" stroke-width="1.5" style="margin-bottom:16px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                <h3>No invoices yet</h3>
-                <p>Click "Refresh from Sage" to sync, or wait for auto-sync to complete.</p>
-            </div>
-            {% endif %}
-        </div>
-    </div>
+<div class="toolbar">
+    <label style="font-size:12px;color:var(--slate500)">From:</label>
+    <input type="date" id="dateFrom">
+    <label style="font-size:12px;color:var(--slate500)">To:</label>
+    <input type="date" id="dateTo">
+    <button class="btn" id="btnSync" onclick="syncSage()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        Sync Date Range
+    </button>
+    <button class="btn btn-primary btn-sm" onclick="postAllPending()">Post All Pending</button>
+</div>
 
-    <!-- Pagination -->
-    {% if total_pages > 1 %}
-    <div class="pagination">
-        <div class="page-info">
-            Showing page {{ page }} of {{ total_pages }} ({{ total }} invoices)
-        </div>
-        <div class="page-buttons">
-            <a href="/?page={{ page - 1 }}" class="page-btn {{ 'disabled' if page <= 1 }}">&laquo; Prev</a>
-            {% for p in range(1, total_pages + 1) %}
-                {% if p == page %}
-                    <span class="page-btn active">{{ p }}</span>
-                {% elif p <= 3 or p >= total_pages - 1 or (p >= page - 1 and p <= page + 1) %}
-                    <a href="/?page={{ p }}" class="page-btn">{{ p }}</a>
-                {% elif p == 4 and page > 5 %}
-                    <span class="page-btn disabled">&hellip;</span>
-                {% elif p == total_pages - 2 and page < total_pages - 4 %}
-                    <span class="page-btn disabled">&hellip;</span>
+<div class="table-wrap">
+<table>
+    <thead>
+        <tr>
+            <th>Customer Name</th><th>Customer ID</th><th>Invoice No.</th><th>Date</th>
+            <th>Status</th><th style="text-align:right">Invoice Total</th><th>Post to FIRS</th><th>Download PDF</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for inv in invoices %}
+        <tr>
+            <td>{{ inv.customer_name }}</td>
+            <td>{{ inv.customer_id }}</td>
+            <td><strong>{{ inv.invoice_num }}</strong></td>
+            <td>{{ inv.invoice_date }}</td>
+            <td>
+                {% if inv.status == 'posted' %}<span class="badge badge-posted">POSTED</span>
+                {% elif inv.status == 'failed' %}<span class="badge badge-failed">FAILED</span>
+                    <button class="btn-ghost" onclick="showError({{ inv.trx_number }})" title="View full error" style="color:var(--red);font-size:11px;padding:2px 6px;margin-left:4px">&#9888; Error</button>
+                {% else %}<span class="badge badge-pending">PENDING</span>{% endif %}
+            </td>
+            <td style="text-align:right;font-weight:600">{{ "{:,.2f}".format(inv.amount) }}</td>
+            <td class="actions-cell">
+                {% if inv.status == 'posted' %}
+                    <span style="color:var(--green);font-size:12px;font-weight:600">&#10003; Done</span>
+                {% elif inv.status == 'failed' %}
+                    <button class="btn btn-sm" style="background:var(--red);color:white" onclick="postInvoice({{ inv.trx_number }}, this)">Retry</button>
+                {% else %}
+                    <button class="btn btn-primary btn-sm" onclick="postInvoice({{ inv.trx_number }}, this)">Post</button>
                 {% endif %}
-            {% endfor %}
-            <a href="/?page={{ page + 1 }}" class="page-btn {{ 'disabled' if page >= total_pages }}">Next &raquo;</a>
+                <button class="btn-ghost" onclick="previewPayload({{ inv.trx_number }})" title="Preview JSON payload">{ }</button>
+            </td>
+            <td>
+                {% if inv.status == 'posted' %}
+                    <a href="/download/{{ inv.trx_number }}" class="btn btn-sm" style="background:var(--green);color:white">PDF &#8595;</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+        {% if not invoices %}
+        <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--slate400)">No invoices found. Click "Sync Date Range" to load from Sage 50.</td></tr>
+        {% endif %}
+    </tbody>
+</table>
+</div>
+
+{% if total_pages > 1 %}
+<div class="pagination">
+    {% if page > 1 %}<a href="?page={{ page - 1 }}">&laquo; Prev</a>{% endif %}
+    {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}<span class="active">{{ p }}</span>
+        {% elif p <= 3 or p > total_pages - 3 or (p >= page - 2 and p <= page + 2) %}<a href="?page={{ p }}">{{ p }}</a>
+        {% elif p == 4 or p == total_pages - 3 %}<span>...</span>{% endif %}
+    {% endfor %}
+    {% if page < total_pages %}<a href="?page={{ page + 1 }}">Next &raquo;</a>{% endif %}
+</div>
+{% endif %}
+
+<div id="toasts"></div>
+
+<!-- JSON Preview Modal -->
+<div class="modal-overlay" id="previewModal">
+    <div class="modal">
+        <h3 id="previewTitle">API Payload Preview</h3>
+        <div class="modal-subtitle" id="previewSubtitle"></div>
+        <div class="preview-info" id="previewInfo" style="display:none">
+            <div><dt>Subtotal</dt><dd id="pvSubtotal"></dd></div>
+            <div><dt>VAT</dt><dd id="pvVat"></dd></div>
+            <div><dt>Grand Total</dt><dd id="pvGrand"></dd></div>
+        </div>
+        <div class="modal-body">
+            <pre id="previewJson">Loading...</pre>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-ghost" onclick="copyPayload()">Copy JSON</button>
+            <button class="btn btn-sm" onclick="closePreview()">Close</button>
         </div>
     </div>
-    {% endif %}
+</div>
 
-    <div class="toast-container" id="toasts"></div>
-
-    <div class="modal-overlay" id="bulkModal">
-        <div class="modal">
-            <h3>Post All Pending Invoices?</h3>
-            <p id="bulkModalText">This will submit all pending invoices to FIRS.</p>
-            <div class="modal-actions">
-                <button class="btn btn-outline" onclick="closeBulkModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="confirmPostAll()">Yes, Post All</button>
-            </div>
+<!-- Error Details Modal -->
+<div class="modal-overlay" id="errorModal">
+    <div class="modal">
+        <h3 id="errorTitle" style="color:var(--red)">&#9888; API Error Details</h3>
+        <div class="modal-subtitle" id="errorSubtitle"></div>
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:12px">
+            <div style="font-weight:600;color:#991b1b;font-size:13px" id="errorMessage"></div>
+            <div style="font-size:11px;color:#6b7280;margin-top:4px" id="errorStatusCode"></div>
+        </div>
+        <div class="modal-body">
+            <pre id="errorJson" style="background:#1e1e2e;color:#e2e8f0">Loading...</pre>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-ghost" onclick="copyError()">Copy Response</button>
+            <button class="btn btn-sm" onclick="closeError()">Close</button>
         </div>
     </div>
+</div>
+
+<!-- Settings Modal -->
+<div class="modal-overlay" id="settingsModal">
+    <div class="modal" style="max-width:480px">
+        <h3>&#9881; Tax Category Settings</h3>
+        <div class="modal-subtitle">Change tax_category_id values sent to Flick API (applies immediately, no restart needed)</div>
+        <div style="margin:16px 0">
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--slate500)">Taxable lines (VAT &gt; 0%)</label>
+            <input id="setCatStandard" type="text" style="width:100%;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px" value="">
+            <div style="font-size:10px;color:var(--slate400);margin-top:2px">Try: STANDARD_VAT, S, VAT, 01</div>
+        </div>
+        <div style="margin:16px 0">
+            <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--slate500)">Exempt lines (VAT = 0%)</label>
+            <input id="setCatExempt" type="text" style="width:100%;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px" value="">
+            <div style="font-size:10px;color:var(--slate400);margin-top:2px">Try: ZERO_RATE, EXEMPT, TAX_EXEMPT, E, Z, O, NTX, 06</div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-ghost" onclick="closeSettings()">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="saveSettings()">Save</button>
+        </div>
+    </div>
+</div>
 
 <script>
-function toast(message, type='info') {
-    const c = document.getElementById('toasts');
-    const el = document.createElement('div');
-    el.className = 'toast ' + type;
-    const icons = {
+// Set default dates to current month
+(function() {
+    var now = new Date();
+    var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,'0');
+    document.getElementById('dateFrom').value = y + '-' + m + '-01';
+    var last = new Date(y, now.getMonth()+1, 0);
+    document.getElementById('dateTo').value = y + '-' + m + '-' + String(last.getDate()).padStart(2,'0');
+})();
+
+function toast(msg, type) {
+    var c = document.getElementById('toasts'), el = document.createElement('div');
+    el.className = 'toast ' + (type||'info');
+    var icons = {
         success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
         error: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
-        info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
+        info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
     };
-    el.innerHTML = (icons[type]||icons.info) + '<span>' + message + '</span>';
+    el.innerHTML = (icons[type]||icons.info) + '<span>' + msg + '</span>';
     c.appendChild(el);
-    setTimeout(function() { el.style.opacity='0'; setTimeout(function(){el.remove()}, 300); }, 4000);
-}
-
-/* ---- Set default date range to current month ---- */
-var _syncInterval = null;
-
-window.addEventListener('DOMContentLoaded', function() {
-    var now = new Date();
-    var y = now.getFullYear();
-    var m = String(now.getMonth() + 1).padStart(2, '0');
-    var lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
-    document.getElementById('dateFrom').value = y + '-' + m + '-01';
-    document.getElementById('dateTo').value = y + '-' + m + '-' + String(lastDay).padStart(2, '0');
-
-    // Initial sync on page load
-    autoSync(true);
-
-    // Auto-resync every 5 minutes (300000ms)
-    _syncInterval = setInterval(function() {
-        autoSync(false);
-    }, 300000);
-});
-
-function getDateRange() {
-    return {
-        date_from: document.getElementById('dateFrom').value,
-        date_to: document.getElementById('dateTo').value,
-    };
-}
-
-function autoSync(isInitial) {
-    var banner = document.getElementById('syncBanner');
-    var txt = document.getElementById('syncBannerText');
-    var sp = document.getElementById('syncSpinner');
-    var dr = getDateRange();
-    banner.style.display = 'flex';
-    banner.className = 'sync-banner';
-    txt.textContent = 'Syncing invoices from Sage 50 (' + dr.date_from + ' to ' + dr.date_to + ')...';
-    sp.style.display = '';
-
-    fetch('/api/sync', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(dr)
-    })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            sp.style.display = 'none';
-            if (data.ok) {
-                banner.className = 'sync-banner success';
-                txt.textContent = 'Synced ' + data.synced + ' invoices' +
-                    (data.new > 0 ? ' (' + data.new + ' new)' : '') +
-                    ' for ' + data.date_from + ' to ' + data.date_to +
-                    ' — Next auto-sync in 5 min';
-                // Only reload if there are NEW invoices (not on every sync)
-                if (data.new > 0) {
-                    setTimeout(function() { location.reload(); }, 1500);
-                } else {
-                    setTimeout(function() { banner.style.display = 'none'; }, 4000);
-                }
-            } else {
-                banner.className = 'sync-banner error';
-                txt.textContent = 'Sage sync failed: ' + (data.error || 'Unknown error');
-            }
-        })
-        .catch(function(e) {
-            sp.style.display = 'none';
-            banner.className = 'sync-banner error';
-            txt.textContent = 'Sync error: ' + e.message;
-        });
+    setTimeout(function() { el.style.opacity = '0'; setTimeout(function() { el.remove(); }, 300); }, 4000);
 }
 
 function syncSage() {
     var btn = document.getElementById('btnSync');
-    var dr = getDateRange();
-    if (!dr.date_from || !dr.date_to) {
-        toast('Please select both From and To dates', 'error');
-        return;
-    }
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner spinner-dark"></span> Syncing...';
-    fetch('/api/sync', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(dr)
-    })
+    var df = document.getElementById('dateFrom').value, dt = document.getElementById('dateTo').value;
+    if (!df || !dt) { toast('Please select both dates', 'error'); return; }
+    btn.disabled = true; btn.innerHTML = '<span class="spinner spinner-dark"></span> Syncing...';
+    fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({date_from: df, date_to: dt}) })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.ok) {
-                toast('Synced ' + data.synced + ' invoices (' + data.new + ' new) for ' + data.date_from + ' to ' + data.date_to, 'success');
-                if (data.new > 0) {
-                    setTimeout(function() { location.reload(); }, 800);
-                } else {
-                    resetSyncBtn();
-                    // Reload anyway on manual sync to show updated data
-                    setTimeout(function() { location.reload(); }, 800);
-                }
-            } else {
-                toast('Sync failed: ' + data.error, 'error');
-                resetSyncBtn();
-            }
-        })
-        .catch(function(e) {
-            toast('Sync error: ' + e.message, 'error');
-            resetSyncBtn();
-        });
-}
-
-function resetSyncBtn() {
-    var btn = document.getElementById('btnSync');
-    btn.disabled = false;
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Sync Date Range';
+            if (data.ok) { toast('Synced ' + data.synced + ' invoices (' + data.new + ' new)', 'success'); setTimeout(function(){location.reload();}, 800); }
+            else { toast('Sync failed: ' + data.error, 'error'); btn.disabled = false; btn.textContent = 'Sync Date Range'; }
+        }).catch(function(e) { toast('Error: ' + e.message, 'error'); btn.disabled = false; btn.textContent = 'Sync Date Range'; });
 }
 
 function postInvoice(trx, btnEl) {
-    btnEl.disabled = true;
-    btnEl.innerHTML = '<span class="spinner"></span>';
+    btnEl.disabled = true; btnEl.innerHTML = '<span class="spinner"></span>';
     fetch('/api/post/' + trx, { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.ok) {
-                toast('Posted! IRN: ' + data.irn, 'success');
-                setTimeout(function() { location.reload(); }, 800);
-            } else {
-                var errMsg = data.error || 'Unknown error';
-                toast('Failed: ' + errMsg, 'error');
-                btnEl.disabled = false;
-                btnEl.innerHTML = 'Retry';
-                btnEl.title = errMsg;
-                console.error('Post TRX ' + trx + ' failed:', errMsg);
+            if (data.ok) { toast('Posted! IRN: ' + (data.irn||''), 'success'); setTimeout(function(){location.reload();}, 800); }
+            else {
+                toast('Failed: ' + (data.error||'').substring(0, 80), 'error');
+                btnEl.disabled = false; btnEl.textContent = 'Retry'; btnEl.style.background = 'var(--red)'; btnEl.style.color = 'white';
+                if (data.api_response) {
+                    showErrorModal(trx, data.error, data.api_response, data.status_code);
+                }
+                setTimeout(function(){location.reload();}, 1500);
             }
-        })
-        .catch(function(e) {
-            toast('Error: ' + e.message, 'error');
-            btnEl.disabled = false;
-            btnEl.innerHTML = 'Retry';
-            console.error('Post TRX ' + trx + ' exception:', e);
-        });
+        }).catch(function(e) { toast('Error: ' + e.message, 'error'); btnEl.disabled = false; btnEl.textContent = 'Retry'; });
 }
 
 function postAllPending() {
-    var pending = document.querySelectorAll('tr[data-status="pending"]').length;
-    if (pending === 0) { toast('No pending invoices on this page', 'info'); return; }
-    document.getElementById('bulkModalText').textContent =
-        'This will submit ALL pending invoices to FIRS. Continue?';
-    document.getElementById('bulkModal').classList.add('active');
-}
-function closeBulkModal() { document.getElementById('bulkModal').classList.remove('active'); }
-function confirmPostAll() {
-    closeBulkModal();
-    var btn = document.getElementById('btnPostAll');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Posting...';
+    if (!confirm('Post all pending invoices to FIRS?')) return;
+    toast('Posting all pending...', 'info');
     fetch('/api/post-bulk', { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.ok) {
-                toast('Done! ' + data.posted + ' posted, ' + data.failed + ' failed',
-                      data.failed > 0 ? 'error' : 'success');
-                setTimeout(function() { location.reload(); }, 1000);
-            } else { toast('Bulk post failed', 'error'); }
-            resetPostAllBtn();
-        })
-        .catch(function(e) {
-            toast('Error: ' + e.message, 'error');
-            resetPostAllBtn();
-        });
-}
-function resetPostAllBtn() {
-    var btn = document.getElementById('btnPostAll');
-    btn.disabled = false;
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Post All Pending';
+            if (data.ok) { toast('Posted: ' + data.posted + ', Failed: ' + data.failed, data.failed > 0 ? 'error' : 'success'); setTimeout(function(){location.reload();}, 1000); }
+            else { toast('Bulk post failed: ' + data.error, 'error'); }
+        }).catch(function(e) { toast('Error: ' + e.message, 'error'); });
 }
 
-function filterTable() {
-    var query = document.getElementById('searchInput').value.toLowerCase();
-    var rows = document.querySelectorAll('#invoiceTable tbody tr');
-    rows.forEach(function(row) {
-        row.style.display = (!query || row.dataset.search.indexOf(query) !== -1) ? '' : 'none';
-    });
+// === PREVIEW PAYLOAD ===
+var _lastPayloadJson = '';
+
+function previewPayload(trx) {
+    var modal = document.getElementById('previewModal');
+    var pre = document.getElementById('previewJson');
+    var info = document.getElementById('previewInfo');
+    pre.textContent = 'Loading... (fetching line items from Sage 50)';
+    info.style.display = 'none';
+    document.getElementById('previewSubtitle').textContent = 'TRX ' + trx;
+    modal.classList.add('active');
+
+    fetch('/api/preview-payload/' + trx)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) {
+                document.getElementById('previewTitle').textContent = data.invoice_num + ' — API Payload';
+                document.getElementById('previewSubtitle').textContent = data.customer_name + ' | PostOrder=' + (data.post_order||'?') + ' | ' + data.lines_count + ' line(s)';
+                document.getElementById('pvSubtotal').textContent = 'N' + Number(data.subtotal).toLocaleString(undefined, {minimumFractionDigits:2});
+                document.getElementById('pvVat').textContent = 'N' + Number(data.vat_amount).toLocaleString(undefined, {minimumFractionDigits:2});
+                document.getElementById('pvGrand').textContent = 'N' + Number(data.grand_total).toLocaleString(undefined, {minimumFractionDigits:2});
+                info.style.display = 'grid';
+                _lastPayloadJson = JSON.stringify(data.payload, null, 2);
+                pre.textContent = _lastPayloadJson;
+            } else {
+                pre.textContent = 'Error: ' + (data.error || 'Unknown error');
+                _lastPayloadJson = '';
+            }
+        }).catch(function(e) {
+            pre.textContent = 'Fetch error: ' + e.message;
+            _lastPayloadJson = '';
+        });
 }
+
+function closePreview() { document.getElementById('previewModal').classList.remove('active'); }
+
+function copyPayload() {
+    if (_lastPayloadJson) {
+        navigator.clipboard.writeText(_lastPayloadJson).then(function() { toast('JSON copied to clipboard', 'success'); });
+    }
+}
+
+// Close modal on backdrop click
+document.getElementById('previewModal').addEventListener('click', function(e) {
+    if (e.target === this) closePreview();
+});
+
+// === ERROR DETAILS ===
+var _lastErrorJson = '';
+
+function showError(trx) {
+    var modal = document.getElementById('errorModal');
+    var pre = document.getElementById('errorJson');
+    pre.textContent = 'Loading...';
+    document.getElementById('errorMessage').textContent = '';
+    document.getElementById('errorStatusCode').textContent = '';
+    document.getElementById('errorSubtitle').textContent = 'TRX ' + trx;
+    document.getElementById('errorTitle').textContent = '\u26A0 API Error Details';
+    modal.classList.add('active');
+
+    fetch('/api/error-details/' + trx)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) {
+                document.getElementById('errorTitle').textContent = '\u26A0 ' + (data.invoice_num || 'Invoice') + ' — Error Details';
+                document.getElementById('errorSubtitle').textContent = (data.customer_name || '') + ' | Status: ' + (data.status || '');
+                document.getElementById('errorMessage').textContent = data.error_message || 'No error message stored';
+                if (data.api_response && typeof data.api_response === 'object') {
+                    _lastErrorJson = JSON.stringify(data.api_response, null, 2);
+                } else {
+                    _lastErrorJson = data.api_response || 'No API response stored';
+                }
+                pre.textContent = _lastErrorJson;
+            } else {
+                pre.textContent = 'Could not load error details: ' + (data.error || '');
+                _lastErrorJson = '';
+            }
+        }).catch(function(e) {
+            pre.textContent = 'Fetch error: ' + e.message;
+            _lastErrorJson = '';
+        });
+}
+
+function showErrorModal(trx, errorMsg, apiResponse, statusCode) {
+    var modal = document.getElementById('errorModal');
+    document.getElementById('errorTitle').textContent = '\u26A0 Post Failed — TRX ' + trx;
+    document.getElementById('errorSubtitle').textContent = 'The API rejected this invoice';
+    document.getElementById('errorMessage').textContent = errorMsg || 'Unknown error';
+    document.getElementById('errorStatusCode').textContent = statusCode ? 'HTTP Status: ' + statusCode : '';
+    if (typeof apiResponse === 'object') {
+        _lastErrorJson = JSON.stringify(apiResponse, null, 2);
+    } else {
+        _lastErrorJson = apiResponse || '';
+    }
+    document.getElementById('errorJson').textContent = _lastErrorJson;
+    modal.classList.add('active');
+}
+
+function closeError() { document.getElementById('errorModal').classList.remove('active'); }
+
+function copyError() {
+    if (_lastErrorJson) {
+        navigator.clipboard.writeText(_lastErrorJson).then(function() { toast('Error response copied', 'success'); });
+    }
+}
+
+document.getElementById('errorModal').addEventListener('click', function(e) {
+    if (e.target === this) closeError();
+});
+
+// === SETTINGS ===
+function openSettings() {
+    var modal = document.getElementById('settingsModal');
+    modal.classList.add('active');
+    fetch('/api/tax-categories')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.getElementById('setCatStandard').value = data.standard || '';
+            document.getElementById('setCatExempt').value = data.exempt || '';
+        });
+}
+
+function closeSettings() { document.getElementById('settingsModal').classList.remove('active'); }
+
+function saveSettings() {
+    var s = document.getElementById('setCatStandard').value.trim();
+    var e = document.getElementById('setCatExempt').value.trim();
+    if (!s || !e) { toast('Both fields are required', 'error'); return; }
+    fetch('/api/tax-categories', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({standard: s, exempt: e}) })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) { toast('Tax categories updated: ' + data.standard + ' / ' + data.exempt, 'success'); closeSettings(); }
+            else { toast('Failed to save', 'error'); }
+        });
+}
+
+document.getElementById('settingsModal').addEventListener('click', function(e) {
+    if (e.target === this) closeSettings();
+});
+
+// Auto-sync on first load
+window.addEventListener('load', function() {
+    var banner = document.getElementById('syncBanner');
+    var txt = document.getElementById('syncBannerText');
+    var sp = document.getElementById('syncSpinner');
+    banner.style.display = 'flex';
+    var df = document.getElementById('dateFrom').value, dt = document.getElementById('dateTo').value;
+    fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({date_from: df, date_to: dt}) })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            sp.style.display = 'none';
+            if (data.ok) {
+                txt.textContent = 'Synced ' + data.synced + ' invoices' + (data.new > 0 ? ' (' + data.new + ' new)' : '');
+                if (data.new > 0) setTimeout(function() { location.reload(); }, 1000);
+                else setTimeout(function() { banner.style.display = 'none'; }, 3000);
+            } else { banner.className = 'sync-banner error'; txt.textContent = 'Sync failed: ' + (data.error||''); }
+        }).catch(function(e) { sp.style.display = 'none'; banner.className = 'sync-banner error'; txt.textContent = 'Sync error: ' + e.message; });
+});
 </script>
 </body>
 </html>
