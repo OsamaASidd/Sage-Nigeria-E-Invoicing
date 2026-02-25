@@ -100,7 +100,7 @@ def init_db():
                 customer_address TEXT, customer_city TEXT, invoice_date TEXT,
                 amount REAL DEFAULT 0, status TEXT DEFAULT 'pending',
                 irn TEXT, qr_code TEXT, posted_at TEXT, error_message TEXT, api_response TEXT,
-                invoice_description TEXT, last_synced TEXT)""")
+                invoice_description TEXT, invoice_type TEXT DEFAULT 'Invoice', last_synced TEXT)""")
             conn.execute("""CREATE TABLE IF NOT EXISTS invoice_lines (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, trx_number INTEGER,
                 line_num INTEGER, item_code TEXT, description TEXT,
@@ -109,7 +109,7 @@ def init_db():
             for tbl, col, typ in [
                 ("invoices","invoice_description","TEXT"),("invoices","post_order","INTEGER"),
                 ("invoices","vat_amount","REAL DEFAULT 0"),("invoice_lines","tax_rate","REAL DEFAULT 0"),
-                ("invoices","api_response","TEXT")]:
+                ("invoices","api_response","TEXT"),("invoices","invoice_type","TEXT DEFAULT 'Invoice'")]:
                 try: conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}"); conn.commit()
                 except: pass
         finally: conn.close()
@@ -143,7 +143,7 @@ def sync_headers_from_sage(date_from=None, date_to=None):
     except Exception as e: return {"ok": False, "error": f"ODBC: {e}"}
     try:
         cursor = sage.cursor()
-        cursor.execute('SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, Reference, Description FROM "JrnlHdr" WHERE Module=\'R\' AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC', (date_from, date_to))
+        cursor.execute('SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, Reference, Description, JrnlTypeEx FROM "JrnlHdr" WHERE Module=\'R\' AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC', (date_from, date_to))
         headers = cursor.fetchall()
         cust_map = {}
         try:
@@ -165,17 +165,24 @@ def sync_headers_from_sage(date_from=None, date_to=None):
     for hdr in headers:
         trx_num, post_order, cust_recnum, tx_date = hdr[0], hdr[1], hdr[2], hdr[3]
         main_amt, ref, desc = to_float(hdr[4]), to_str(hdr[5]), to_str(hdr[6])
+        jrnl_type_ex = int(hdr[7]) if len(hdr) > 7 and hdr[7] is not None else 0
         inv_num = ref if ref else f"TRX-{trx_num}"
         tx_date_str = tx_date.strftime("%Y-%m-%d") if isinstance(tx_date, (datetime, date)) else str(tx_date)[:10]
         cust = cust_map.get(cust_recnum, {}); addr = addr_map.get(cust_recnum, {})
         cust_name = cust.get("name", "") or desc
+        # Detect invoice type: negative amount or JrnlTypeEx=2 => Credit Note
+        ref_upper = (ref or "").upper()
+        if main_amt < 0 or jrnl_type_ex == 2 or "CREDIT MEMO" in ref_upper or ref_upper.startswith("CM/"):
+            inv_type = "Credit Note"
+        else:
+            inv_type = "Invoice"
         if trx_num in existing_map:
-            operations.append(("UPDATE invoices SET post_order=?,invoice_num=?,customer_name=?,customer_id=?,customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,invoice_date=?,amount=?,invoice_description=?,last_synced=? WHERE trx_number=?",
-                (post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, now, trx_num)))
+            operations.append(("UPDATE invoices SET post_order=?,invoice_num=?,customer_name=?,customer_id=?,customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,invoice_date=?,amount=?,invoice_description=?,invoice_type=?,last_synced=? WHERE trx_number=?",
+                (post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now, trx_num)))
         else:
             new_count += 1
-            operations.append(("INSERT INTO invoices (trx_number,post_order,invoice_num,customer_name,customer_id,customer_tin,customer_email,customer_phone,customer_address,customer_city,invoice_date,amount,status,invoice_description,last_synced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)",
-                (trx_num, post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, now)))
+            operations.append(("INSERT INTO invoices (trx_number,post_order,invoice_num,customer_name,customer_id,customer_tin,customer_email,customer_phone,customer_address,customer_city,invoice_date,amount,status,invoice_description,invoice_type,last_synced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
+                (trx_num, post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now)))
     if operations: db_write_many(operations)
     return {"ok": True, "synced": len(headers), "new": new_count, "date_from": date_from, "date_to": date_to}
 
@@ -319,12 +326,21 @@ def build_payload(trx_number):
     inv_num = inv["invoice_num"] or f"TRX-{trx_number}"
     irn = f"{inv_num}-{(inv['invoice_date'] or '').replace('-', '')}"
 
+    # Invoice type code: 394=Invoice, 381=Credit Note, 383=Debit Note
+    inv_type = inv.get("invoice_type") or "Invoice"
+    if inv_type == "Credit Note":
+        type_code = "381"
+    elif inv_type == "Debit Note":
+        type_code = "383"
+    else:
+        type_code = "394"
+
     payload = {
         "business_id": SUPPLIER["business_id"],
         "irn": irn,
         "document_identifier": inv_num,
         "issue_date": inv["invoice_date"],
-        "invoice_type_code": "394",
+        "invoice_type_code": type_code,
         "document_currency_code": "NGN",
         "tax_currency_code": "NGN",
         "accounting_supplier_party": {
