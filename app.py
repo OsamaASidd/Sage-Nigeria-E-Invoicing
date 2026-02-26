@@ -143,7 +143,7 @@ def sync_headers_from_sage(date_from=None, date_to=None):
     except Exception as e: return {"ok": False, "error": f"ODBC: {e}"}
     try:
         cursor = sage.cursor()
-        cursor.execute('SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, Reference, Description, JrnlTypeEx FROM "JrnlHdr" WHERE Module=\'R\' AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC', (date_from, date_to))
+        cursor.execute('SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, Reference, Description, JournalEx FROM "JrnlHdr" WHERE Module=\'R\' AND JournalEx IN (8, 9) AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC', (date_from, date_to))
         headers = cursor.fetchall()
         cust_map = {}
         try:
@@ -165,14 +165,15 @@ def sync_headers_from_sage(date_from=None, date_to=None):
     for hdr in headers:
         trx_num, post_order, cust_recnum, tx_date = hdr[0], hdr[1], hdr[2], hdr[3]
         main_amt, ref, desc = to_float(hdr[4]), to_str(hdr[5]), to_str(hdr[6])
-        jrnl_type_ex = int(hdr[7]) if len(hdr) > 7 and hdr[7] is not None else 0
+        jrnl_ex = int(hdr[7]) if len(hdr) > 7 and hdr[7] is not None else 0
         inv_num = ref if ref else f"TRX-{trx_num}"
         tx_date_str = tx_date.strftime("%Y-%m-%d") if isinstance(tx_date, (datetime, date)) else str(tx_date)[:10]
         cust = cust_map.get(cust_recnum, {}); addr = addr_map.get(cust_recnum, {})
         cust_name = cust.get("name", "") or desc
-        # Detect invoice type: negative amount or JrnlTypeEx=2 => Credit Note
-        ref_upper = (ref or "").upper()
-        if main_amt < 0 or jrnl_type_ex == 2 or "CREDIT MEMO" in ref_upper or ref_upper.startswith("CM/"):
+        # Detect invoice type from JournalEx (Sage 50 official):
+        #   8 = Sales Invoice, 9 = Customer Credit Memo
+        # Also check: negative amount or Reference containing CM/CREDIT MEMO
+        if jrnl_ex == 9 or main_amt < 0 or "CREDIT MEMO" in (ref or "").upper() or (ref or "").upper().startswith("CM/"):
             inv_type = "Credit Note"
         else:
             inv_type = "Invoice"
@@ -509,10 +510,14 @@ def index():
         total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE); page = max(1, min(page, total_pages)); offset = (page - 1) * PER_PAGE
         invoices = db_read("SELECT * FROM invoices ORDER BY invoice_date DESC, trx_number DESC LIMIT ? OFFSET ?", (PER_PAGE, offset))
         all_stats = db_read("SELECT status, COUNT(*) as cnt FROM invoices GROUP BY status")
-        stats = {"total": 0, "posted": 0, "pending": 0, "failed": 0}
+        stats = {"total": 0, "posted": 0, "pending": 0, "failed": 0, "credit_notes": 0, "invoices_count": 0}
         for s in all_stats: stats[s["status"]] = s["cnt"]; stats["total"] += s["cnt"]
+        type_stats = db_read("SELECT invoice_type, COUNT(*) as cnt FROM invoices GROUP BY invoice_type")
+        for t in type_stats:
+            if t["invoice_type"] == "Credit Note": stats["credit_notes"] = t["cnt"]
+            elif t["invoice_type"] == "Invoice": stats["invoices_count"] = t["cnt"]
     except:
-        invoices=[]; stats={"total":0,"posted":0,"pending":0,"failed":0}; total=0; total_pages=1; page=1
+        invoices=[]; stats={"total":0,"posted":0,"pending":0,"failed":0,"credit_notes":0,"invoices_count":0}; total=0; total_pages=1; page=1
     return render_template("index.html", invoices=invoices, stats=stats, page=page, total_pages=total_pages, total=total)
 
 @app.route("/api/sync", methods=["POST"])
