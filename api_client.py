@@ -7,7 +7,7 @@ Handles all communication with the Flick Network e-invoicing API.
 import requests
 import json
 import logging
-from config import API_BASE_URL, PARTICIPANT_ID, API_KEY
+from config import API_BASE_URL, API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +20,14 @@ class EInvoiceAPIClient:
         self.headers = {
             "Content-Type": "application/json",
             "User-Agent": "Sage50-EInvoicing-Integration/1.0",
-            "participant-id": participant_id or PARTICIPANT_ID,
             "x-api-key": api_key or API_KEY,
         }
+        # self.headers = {
+        #     "Content-Type": "application/json",
+        #     "User-Agent": "Sage50-EInvoicing-Integration/1.0",
+        #     "participant-id": participant_id or PARTICIPANT_ID,
+        #     "x-api-key": api_key or API_KEY,
+        # }
 
     def _request(self, method, endpoint, payload=None):
         """Make an API request with error handling."""

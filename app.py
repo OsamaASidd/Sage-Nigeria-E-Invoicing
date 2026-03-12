@@ -253,7 +253,15 @@ def fetch_line_items(trx_number):
             item_id = item_info.get("item_id", ""); item_desc_val = item_info.get("description", "")
             sales_price = item_info.get("price", 0)
             line_desc = row_desc or item_desc_val or item_id or ""
-            unit_price = abs(unit_cost) if unit_cost != 0 else (sales_price if sales_price > 0 else abs(amount))
+            # Priority: 1) UnitCost from JrnlRow, 2) Amount/Qty from JrnlRow, 3) SalesPrice1 from LineItem
+            if unit_cost != 0:
+                unit_price = abs(unit_cost)
+            elif qty != 0 and amount != 0:
+                unit_price = abs(amount / qty)
+            elif sales_price > 0:
+                unit_price = sales_price
+            else:
+                unit_price = abs(amount)
             if qty != 0 or item_recnum > 0:
                 lines.append({"item_code": item_id or str(item_recnum), "description": line_desc or "Service",
                     "quantity": abs(qty) if qty != 0 else 1, "unit_price": unit_price,
