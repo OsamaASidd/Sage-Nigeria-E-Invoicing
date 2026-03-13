@@ -1,7 +1,7 @@
 """
 Nigeria E-Invoicing API Client
 ===============================
-Handles all communication with the Flick Network e-invoicing API.
+Handles all communication with the Cryptware Systems e-invoicing API.
 """
 
 import requests
@@ -13,23 +13,17 @@ logger = logging.getLogger(__name__)
 
 
 class EInvoiceAPIClient:
-    """Client for Nigeria E-Invoicing API (Flick Network)"""
+    """Client for Nigeria E-Invoicing API (Cryptware Systems)"""
 
-    def __init__(self, base_url=None, participant_id=None, api_key=None):
+    def __init__(self, base_url=None, api_key=None):
         self.base_url = (base_url or API_BASE_URL).rstrip("/")
         self.headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Sage50-EInvoicing-Integration/1.0",
+            "User-Agent": "SageX3-EInvoicing-Integration/1.0",
             "x-api-key": api_key or API_KEY,
         }
-        # self.headers = {
-        #     "Content-Type": "application/json",
-        #     "User-Agent": "Sage50-EInvoicing-Integration/1.0",
-        #     "participant-id": participant_id or PARTICIPANT_ID,
-        #     "x-api-key": api_key or API_KEY,
-        # }
 
-    def _request(self, method, endpoint, payload=None):
+    def _request(self, method, endpoint, payload=None, params=None):
         """Make an API request with error handling."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         logger.info(f"API {method} -> {url}")
@@ -40,6 +34,7 @@ class EInvoiceAPIClient:
                 url=url,
                 headers=self.headers,
                 json=payload,
+                params=params,
                 timeout=30,
             )
 
@@ -71,17 +66,30 @@ class EInvoiceAPIClient:
         """POST /invoice/generate - Submit a new invoice."""
         return self._request("POST", "/invoice/generate", invoice_data)
 
-    def search_invoices(self):
-        """GET /invoice/search - List all invoices."""
-        return self._request("GET", "/invoice/search")
+    def search_invoices(self, page=1, limit=20, status=None, from_date=None, to_date=None, transaction_category=None):
+        """GET /invoice - List invoices with optional filters."""
+        params = {"page": page, "limit": limit}
+        if status:
+            params["status"] = status
+        if from_date:
+            params["from_date"] = from_date
+        if to_date:
+            params["to_date"] = to_date
+        if transaction_category:
+            params["transaction_category"] = transaction_category
+        return self._request("GET", "/invoice", params=params)
 
-    def download_invoice(self, irn):
-        """GET /invoice/download/{irn} - Download invoice details."""
-        return self._request("GET", f"/invoice/download/{irn}")
+    def get_invoice_details(self, invoice_id):
+        """GET /invoice/{id} - Get full invoice details by UUID or IRN."""
+        return self._request("GET", f"/invoice/{invoice_id}")
 
-    def get_invoice_details(self, irn):
-        """GET /invoice/details/{irn} - Get invoice QR code."""
-        return self._request("GET", f"/invoice/details/{irn}")
+    def get_invoice_status(self, invoice_id):
+        """GET /invoice/{id}/status - Get invoice processing status."""
+        return self._request("GET", f"/invoice/{invoice_id}/status")
+
+    def download_qr_code(self, invoice_id):
+        """GET /invoice/{id}/qrcode - Download QR code PNG. Note: invoice_id must be UUID, not IRN."""
+        return self._request("GET", f"/invoice/{invoice_id}/qrcode")
 
     def update_payment_status(self, irn, payment_status, reference):
         """PATCH /invoice/{irn} - Update payment status."""
@@ -91,38 +99,58 @@ class EInvoiceAPIClient:
         }
         return self._request("PATCH", f"/invoice/{irn}", payload)
 
+    def transmit_invoice(self, irn):
+        """POST /invoice/transmit/{irn} - Transmit signed invoice to NRS."""
+        return self._request("POST", f"/invoice/transmit/{irn}")
+
+    def retry_invoice(self, invoice_id):
+        """POST /invoice/{id}/retry - Retry a failed invoice."""
+        return self._request("POST", f"/invoice/{invoice_id}/retry")
+
+    def get_statistics(self):
+        """GET /invoice/statistics - Get invoice statistics."""
+        return self._request("GET", "/invoice/statistics")
+
     # ----------------------------------------------------------------
-    # RESOURCE ENDPOINTS
+    # REFERENCE DATA ENDPOINTS  (was /resources/*)
     # ----------------------------------------------------------------
-
-    def get_all_resources(self):
-        """GET /resources/all"""
-        return self._request("GET", "/resources/all")
-
-    def get_hs_codes(self):
-        """GET /resources/hs-codes"""
-        return self._request("GET", "/resources/hs-codes")
-
-    def get_service_codes(self):
-        """GET /resources/services-codes"""
-        return self._request("GET", "/resources/services-codes")
-
-    def get_currencies(self):
-        """GET /resources/currencies"""
-        return self._request("GET", "/resources/currencies")
 
     def get_countries(self):
-        """GET /resources/countries"""
-        return self._request("GET", "/resources/countries")
+        """GET /reference-data/countries"""
+        return self._request("GET", "/reference-data/countries")
+
+    def get_currencies(self):
+        """GET /reference-data/currencies"""
+        return self._request("GET", "/reference-data/currencies")
+
+    def get_tax_categories(self):
+        """GET /reference-data/tax-categories"""
+        return self._request("GET", "/reference-data/tax-categories")
+
+    def get_payment_means(self):
+        """GET /reference-data/payment-means"""
+        return self._request("GET", "/reference-data/payment-means")
+
+    def get_invoice_types(self):
+        """GET /reference-data/invoice-types"""
+        return self._request("GET", "/reference-data/invoice-types")
+
+    def get_service_codes(self):
+        """GET /reference-data/service-codes"""
+        return self._request("GET", "/reference-data/service-codes")
+
+    def get_vat_exemptions(self):
+        """GET /reference-data/vat-exemptions"""
+        return self._request("GET", "/reference-data/vat-exemptions")
 
     # ----------------------------------------------------------------
     # HEALTH CHECK
     # ----------------------------------------------------------------
 
     def test_connection(self):
-        """Test API connectivity."""
+        """Test API connectivity via reference data."""
         print("  Testing API...")
-        result = self.get_all_resources()
+        result = self.get_countries()
         if result["success"]:
             print("  [OK] API connection successful!")
             return True
