@@ -8,7 +8,10 @@ Nigeria E-Invoicing Dashboard
 - Line items fetched on-demand when posting
 - FIXED: Uses PostOrder (unique) instead of JrnlKey_TrxNumber (shared across modules)
 - FIXED: Per-line VAT from Sage instead of blanket 7.5%
+- FIXED: cust_map keyed by BOTH CustomerRecordNumber AND CustomerID text
+         so new customers whose CustVendId is a text ID are no longer missed
 - NEW: Preview payload before posting
+- NEW: /api/debug-sync to inspect CustVendId values live
 """
 
 import os, io, json, sqlite3, threading, pyodbc, requests
@@ -41,7 +44,6 @@ SUPPLIER = {
 }
 
 # Tax category IDs for Flick API — change these if you get "Invalid Tax category" errors
-# Try: STANDARD_VAT / ZERO_RATE / EXEMPT / TAX_EXEMPT / S / E / Z / O / NTX
 TAX_CAT_STANDARD = os.environ.get("TAX_CAT_STANDARD", "STANDARD_VAT")
 TAX_CAT_EXEMPT = os.environ.get("TAX_CAT_EXEMPT", "ZERO_VAT")
 
@@ -135,57 +137,189 @@ def find_col(columns, *candidates):
 # === SAGE SYNC ===
 def sync_headers_from_sage(date_from=None, date_to=None):
     if not date_from:
-        today = date.today(); date_from = today.replace(day=1).strftime("%Y-%m-%d")
+        today = date.today()
+        date_from = today.replace(day=1).strftime("%Y-%m-%d")
     if not date_to:
         today = date.today()
-        date_to = today.replace(day=31).strftime("%Y-%m-%d") if today.month == 12 else (today.replace(month=today.month+1, day=1)).strftime("%Y-%m-%d")
-    try: sage = pyodbc.connect(ODBC_CONN)
-    except Exception as e: return {"ok": False, "error": f"ODBC: {e}"}
+        date_to = (
+            today.replace(day=31).strftime("%Y-%m-%d")
+            if today.month == 12
+            else today.replace(month=today.month + 1, day=1).strftime("%Y-%m-%d")
+        )
+
+    try:
+        sage = pyodbc.connect(ODBC_CONN)
+    except Exception as e:
+        return {"ok": False, "error": f"ODBC: {e}"}
+
     try:
         cursor = sage.cursor()
-        cursor.execute('SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, Reference, Description, JournalEx FROM "JrnlHdr" WHERE Module=\'R\' AND JournalEx IN (8, 9) AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC', (date_from, date_to))
+        cursor.execute(
+            'SELECT JrnlKey_TrxNumber, PostOrder, CustVendId, TransactionDate, MainAmount, '
+            'Reference, Description, JournalEx FROM "JrnlHdr" '
+            "WHERE Module='R' AND JournalEx IN (8, 9) "
+            "AND TransactionDate>=? AND TransactionDate<=? ORDER BY TransactionDate DESC",
+            (date_from, date_to),
+        )
         headers = cursor.fetchall()
+
+        # ── FIX: Build cust_map keyed by BOTH CustomerRecordNumber (int) ──
+        # AND CustomerID (text), because JrnlHdr.CustVendId may store either.
+        # Old customers may have matched by coincidence; new customers whose
+        # CustVendId is a text CustomerID were silently returning {} and being
+        # inserted with blank names / missing data.
         cust_map = {}
         try:
-            cursor.execute('SELECT CustomerRecordNumber, CustomerID, Customer_Bill_Name, Phone_Number, eMail_Address, SalesTaxResaleNum FROM "Customers"')
+            cursor.execute(
+                'SELECT CustomerRecordNumber, CustomerID, Customer_Bill_Name, '
+                'Phone_Number, eMail_Address, SalesTaxResaleNum FROM "Customers"'
+            )
             for cr in cursor.fetchall():
-                cust_map[cr[0]] = {"id": to_str(cr[1]), "name": to_str(cr[2]), "phone": to_str(cr[3]), "email": to_str(cr[4]), "tin": to_str(cr[5])}
-        except: pass
+                rec = {
+                    "id":    to_str(cr[1]),
+                    "name":  to_str(cr[2]),
+                    "phone": to_str(cr[3]),
+                    "email": to_str(cr[4]),
+                    "tin":   to_str(cr[5]),
+                }
+                # Key by integer CustomerRecordNumber
+                if cr[0] is not None:
+                    cust_map[cr[0]] = rec
+                # ALSO key by text CustomerID (covers CustVendId text lookups)
+                cust_id_str = to_str(cr[1])
+                if cust_id_str:
+                    cust_map[cust_id_str] = rec
+        except Exception as e:
+            print(f"[WARN] Customers query failed: {e}")
+
+        # ── FIX: Build addr_map keyed by CustomerRecordNumber (int) ──
+        # We also build a secondary lookup by CustomerID string in case
+        # CustVendId is a text key and we need to cross-reference addresses.
         addr_map = {}
+        addr_by_custid = {}
         try:
-            cursor.execute('SELECT CustomerRecordNumber, AddressLine1, AddressLine2, City FROM "Address"')
+            # Join Address to Customers to get CustomerID alongside address
+            cursor.execute(
+                'SELECT a.CustomerRecordNumber, a.AddressLine1, a.AddressLine2, a.City, '
+                'c.CustomerID FROM "Address" a '
+                'LEFT JOIN "Customers" c ON a.CustomerRecordNumber = c.CustomerRecordNumber'
+            )
             for ar in cursor.fetchall():
+                addr_rec = {
+                    "address": ", ".join(p for p in [to_str(ar[1]), to_str(ar[2])] if p),
+                    "city": to_str(ar[3]),
+                }
                 if ar[0] not in addr_map:
-                    addr_map[ar[0]] = {"address": ", ".join(p for p in [to_str(ar[1]), to_str(ar[2])] if p), "city": to_str(ar[3])}
-        except: pass
-    finally: sage.close()
+                    addr_map[ar[0]] = addr_rec
+                cust_id_str = to_str(ar[4])
+                if cust_id_str and cust_id_str not in addr_by_custid:
+                    addr_by_custid[cust_id_str] = addr_rec
+        except Exception:
+            # Fallback: plain Address query without JOIN (original behaviour)
+            try:
+                cursor.execute('SELECT CustomerRecordNumber, AddressLine1, AddressLine2, City FROM "Address"')
+                for ar in cursor.fetchall():
+                    if ar[0] not in addr_map:
+                        addr_map[ar[0]] = {
+                            "address": ", ".join(p for p in [to_str(ar[1]), to_str(ar[2])] if p),
+                            "city": to_str(ar[3]),
+                        }
+            except Exception as e:
+                print(f"[WARN] Address query failed: {e}")
+
+    finally:
+        sage.close()
 
     existing_map = {r["trx_number"]: r["status"] for r in db_read("SELECT trx_number, status FROM invoices")}
-    now = datetime.now().isoformat(); operations = []; new_count = 0
+    now = datetime.now().isoformat()
+    operations = []
+    new_count = 0
+    unresolved = []
+
     for hdr in headers:
-        trx_num, post_order, cust_recnum, tx_date = hdr[0], hdr[1], hdr[2], hdr[3]
+        trx_num, post_order, cust_vendor_id, tx_date = hdr[0], hdr[1], hdr[2], hdr[3]
         main_amt, ref, desc = to_float(hdr[4]), to_str(hdr[5]), to_str(hdr[6])
         jrnl_ex = int(hdr[7]) if len(hdr) > 7 and hdr[7] is not None else 0
         inv_num = ref if ref else f"TRX-{trx_num}"
-        tx_date_str = tx_date.strftime("%Y-%m-%d") if isinstance(tx_date, (datetime, date)) else str(tx_date)[:10]
-        cust = cust_map.get(cust_recnum, {}); addr = addr_map.get(cust_recnum, {})
-        cust_name = cust.get("name", "") or desc
+        tx_date_str = (
+            tx_date.strftime("%Y-%m-%d")
+            if isinstance(tx_date, (datetime, date))
+            else str(tx_date)[:10]
+        )
+
+        # ── FIX: Try int key first, then string key ──
+        # Sage may store CustVendId as int (CustomerRecordNumber) or as
+        # text (CustomerID). Trying both covers all cases including new customers.
+        cust = (
+            cust_map.get(cust_vendor_id)
+            or cust_map.get(to_str(cust_vendor_id))
+            or {}
+        )
+        if not cust:
+            unresolved.append(cust_vendor_id)
+
+        # Address: try int key, then string key against addr_by_custid
+        addr = (
+            addr_map.get(cust_vendor_id)
+            or addr_map.get(int(cust_vendor_id) if str(cust_vendor_id).isdigit() else -1, {})
+            or addr_by_custid.get(to_str(cust_vendor_id))
+            or {}
+        )
+
+        # Fallback name: use journal description, or a labelled unknown
+        cust_name = cust.get("name", "") or desc or f"Unknown ({cust_vendor_id})"
+
         # Detect invoice type from JournalEx (Sage 50 official):
         #   8 = Sales Invoice, 9 = Customer Credit Memo
-        # Also check: negative amount or Reference containing CM/CREDIT MEMO
         if jrnl_ex == 9 or main_amt < 0 or "CREDIT MEMO" in (ref or "").upper() or (ref or "").upper().startswith("CM/"):
             inv_type = "Credit Note"
         else:
             inv_type = "Invoice"
+
         if trx_num in existing_map:
-            operations.append(("UPDATE invoices SET post_order=?,invoice_num=?,customer_name=?,customer_id=?,customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,invoice_date=?,amount=?,invoice_description=?,invoice_type=?,last_synced=? WHERE trx_number=?",
-                (post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now, trx_num)))
+            operations.append((
+                "UPDATE invoices SET post_order=?,invoice_num=?,customer_name=?,customer_id=?,"
+                "customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,"
+                "invoice_date=?,amount=?,invoice_description=?,invoice_type=?,last_synced=? WHERE trx_number=?",
+                (post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
+                 cust.get("email",""), cust.get("phone",""), addr.get("address",""),
+                 addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now, trx_num),
+            ))
         else:
             new_count += 1
-            operations.append(("INSERT INTO invoices (trx_number,post_order,invoice_num,customer_name,customer_id,customer_tin,customer_email,customer_phone,customer_address,customer_city,invoice_date,amount,status,invoice_description,invoice_type,last_synced) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
-                (trx_num, post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""), cust.get("email",""), cust.get("phone",""), addr.get("address",""), addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now)))
-    if operations: db_write_many(operations)
-    return {"ok": True, "synced": len(headers), "new": new_count, "date_from": date_from, "date_to": date_to}
+            operations.append((
+                "INSERT INTO invoices (trx_number,post_order,invoice_num,customer_name,customer_id,"
+                "customer_tin,customer_email,customer_phone,customer_address,customer_city,"
+                "invoice_date,amount,status,invoice_description,invoice_type,last_synced) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
+                (trx_num, post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
+                 cust.get("email",""), cust.get("phone",""), addr.get("address",""),
+                 addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now),
+            ))
+
+    if unresolved:
+        unique_unresolved = list(set(str(x) for x in unresolved))
+        print(
+            f"[WARN] {len(unresolved)} invoice(s) had unresolved CustVendId values: "
+            f"{unique_unresolved[:10]}"
+        )
+        print(
+            "       Hit /api/debug-sync to inspect what CustVendId contains vs "
+            "what's in the Customers table."
+        )
+
+    if operations:
+        db_write_many(operations)
+
+    return {
+        "ok": True,
+        "synced": len(headers),
+        "new": new_count,
+        "unresolved_customers": len(unresolved),
+        "date_from": date_from,
+        "date_to": date_to,
+    }
+
 
 # === FETCH LINE ITEMS (PostOrder FK) ===
 def fetch_line_items(trx_number):
@@ -253,7 +387,6 @@ def fetch_line_items(trx_number):
             item_id = item_info.get("item_id", ""); item_desc_val = item_info.get("description", "")
             sales_price = item_info.get("price", 0)
             line_desc = row_desc or item_desc_val or item_id or ""
-            # Priority: 1) UnitCost from JrnlRow, 2) Amount/Qty from JrnlRow, 3) SalesPrice1 from LineItem
             if unit_cost != 0:
                 unit_price = abs(unit_cost)
             elif qty != 0 and amount != 0:
@@ -303,18 +436,15 @@ def build_payload(trx_number):
     cust_email = inv["customer_email"] or "noemail@placeholder.com"
     cust_phone = inv["customer_phone"] or "+234"
 
-    # Calculate totals
     subtotal = sum(l["amount"] for l in lines if l["unit_price"] > 0)
     tax_amount = vat_amount
     grand_total = subtotal + tax_amount
 
-    # Build line items with FLAT structure (Flick API format)
     api_lines = []
     for i, line in enumerate(lines):
         if line["unit_price"] <= 0: continue
         lr = line.get("tax_rate", 0)
         line_ext = line["quantity"] * line["unit_price"]
-
         api_lines.append({
             "hsn_code": "2710.19",
             "item_name": line["description"] or "Service",
@@ -331,18 +461,13 @@ def build_payload(trx_number):
 
     if not api_lines: return None, lines, vat_amount, "No valid line items"
 
-    # Generate IRN from document identifier + date
     inv_num = inv["invoice_num"] or f"TRX-{trx_number}"
     irn = f"{inv_num}-{(inv['invoice_date'] or '').replace('-', '')}"
 
-    # Invoice type code: 394=Invoice, 381=Credit Note, 383=Debit Note
     inv_type = inv.get("invoice_type") or "Invoice"
-    if inv_type == "Credit Note":
-        type_code = "381"
-    elif inv_type == "Debit Note":
-        type_code = "383"
-    else:
-        type_code = "394"
+    if inv_type == "Credit Note": type_code = "381"
+    elif inv_type == "Debit Note": type_code = "383"
+    else: type_code = "394"
 
     payload = {
         "business_id": SUPPLIER["business_id"],
@@ -513,10 +638,10 @@ def generate_pdf(trx_number):
 @app.route("/")
 def index():
     page = request.args.get("page", 1, type=int)
+    q = request.args.get("q", "").strip()
+    status_filter = request.args.get("status", "").strip()
     try:
-        total_row = db_read_one("SELECT COUNT(*) as cnt FROM invoices"); total = total_row["cnt"] if total_row else 0
-        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE); page = max(1, min(page, total_pages)); offset = (page - 1) * PER_PAGE
-        invoices = db_read("SELECT * FROM invoices ORDER BY invoice_date DESC, trx_number DESC LIMIT ? OFFSET ?", (PER_PAGE, offset))
+        # Always fetch global stats from the full table (unaffected by search)
         all_stats = db_read("SELECT status, COUNT(*) as cnt FROM invoices GROUP BY status")
         stats = {"total": 0, "posted": 0, "pending": 0, "failed": 0, "credit_notes": 0, "invoices_count": 0}
         for s in all_stats: stats[s["status"]] = s["cnt"]; stats["total"] += s["cnt"]
@@ -524,9 +649,40 @@ def index():
         for t in type_stats:
             if t["invoice_type"] == "Credit Note": stats["credit_notes"] = t["cnt"]
             elif t["invoice_type"] == "Invoice": stats["invoices_count"] = t["cnt"]
+
+        # Build WHERE clause for search + status filter
+        where_parts = []
+        params = []
+        if q:
+            where_parts.append(
+                "(LOWER(customer_name) LIKE ? OR LOWER(customer_id) LIKE ? OR LOWER(invoice_num) LIKE ?)"
+            )
+            like = f"%{q.lower()}%"
+            params += [like, like, like]
+        if status_filter and status_filter in ("pending", "posted", "failed"):
+            where_parts.append("status = ?")
+            params.append(status_filter)
+
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        count_row = db_read_one(f"SELECT COUNT(*) as cnt FROM invoices {where_sql}", tuple(params))
+        total = count_row["cnt"] if count_row else 0
+        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * PER_PAGE
+
+        invoices = db_read(
+            f"SELECT * FROM invoices {where_sql} ORDER BY invoice_date DESC, trx_number DESC LIMIT ? OFFSET ?",
+            tuple(params) + (PER_PAGE, offset)
+        )
     except:
         invoices=[]; stats={"total":0,"posted":0,"pending":0,"failed":0,"credit_notes":0,"invoices_count":0}; total=0; total_pages=1; page=1
-    return render_template("index.html", invoices=invoices, stats=stats, page=page, total_pages=total_pages, total=total)
+    return render_template(
+        "index.html",
+        invoices=invoices, stats=stats,
+        page=page, total_pages=total_pages, total=total,
+        q=q, status_filter=status_filter
+    )
 
 @app.route("/api/sync", methods=["POST"])
 def api_sync():
@@ -538,7 +694,6 @@ def api_post(trx_number): return jsonify(post_to_firs(trx_number))
 
 @app.route("/api/error-details/<int:trx_number>")
 def api_error_details(trx_number):
-    """Return full error details for a failed invoice."""
     inv = db_read_one("SELECT trx_number, invoice_num, customer_name, status, error_message, api_response FROM invoices WHERE trx_number=?", (trx_number,))
     if not inv: return jsonify({"ok": False, "error": "Invoice not found"})
     api_resp = inv.get("api_response") or ""
@@ -552,7 +707,6 @@ def api_error_details(trx_number):
 
 @app.route("/api/tax-categories", methods=["GET", "POST"])
 def api_tax_categories():
-    """View or update tax category codes at runtime."""
     global TAX_CAT_STANDARD, TAX_CAT_EXEMPT
     if request.method == "POST":
         data = request.json or {}
@@ -563,8 +717,7 @@ def api_tax_categories():
 
 @app.route("/api/flick-tax-categories")
 def api_flick_tax_categories():
-    """Fetch valid tax categories from Flick API."""
-    base = API_URL.replace("/v1", "")  # https://preprod-ng.flick.network
+    base = API_URL.replace("/v1", "")
     urls = [
         f"{base}/api/v1/invoice/resources/tax-categories",
         f"{API_URL}/invoice/resources/tax-categories",
@@ -575,7 +728,6 @@ def api_flick_tax_categories():
             if resp.status_code == 200:
                 return jsonify({"ok": True, "url": url, "status_code": resp.status_code, "data": resp.json()})
         except: pass
-    # Return last attempt
     try:
         return jsonify({"ok": False, "urls_tried": urls, "last_status": resp.status_code, "last_body": resp.text[:2000]})
     except Exception as e:
@@ -583,7 +735,6 @@ def api_flick_tax_categories():
 
 @app.route("/api/preview-payload/<int:trx_number>")
 def api_preview_payload(trx_number):
-    """Build and return the FIRS API payload without posting."""
     inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
     if not inv: return jsonify({"ok": False, "error": "Invoice not found"})
     payload, lines, vat_amount, error = build_payload(trx_number)
@@ -619,6 +770,78 @@ def api_debug_lines(trx_number):
     return jsonify({"trx_number": trx_number, "post_order": inv.get("post_order") if inv else None,
         "invoice": {"invoice_num": inv["invoice_num"], "customer_name": inv["customer_name"], "amount": inv["amount"], "status": inv["status"]} if inv else None,
         "lines_found": len(lines), "lines": lines[:20], "vat_amount": vat_amount, "subtotal": subtotal, "grand_total": subtotal+vat_amount, "error": error})
+
+@app.route("/api/debug-sync")
+def api_debug_sync():
+    """
+    Diagnostic: shows what CustVendId values look like in JrnlHdr vs
+    what CustomerRecordNumber/CustomerID look like in Customers.
+    Use this to confirm which key format Sage is actually storing so you
+    can verify the double-keyed cust_map fix is working correctly.
+    """
+    try:
+        sage = pyodbc.connect(ODBC_CONN)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+    try:
+        cursor = sage.cursor()
+
+        # Sample recent invoice headers
+        cursor.execute(
+            "SELECT TOP 15 JrnlKey_TrxNumber, CustVendId, Reference, TransactionDate "
+            'FROM "JrnlHdr" WHERE Module=\'R\' AND JournalEx IN (8,9) '
+            "ORDER BY TransactionDate DESC"
+        )
+        jrnl_samples = [
+            {
+                "trx_number": r[0],
+                "CustVendId": r[1],
+                "CustVendId_type": type(r[1]).__name__,
+                "Reference": r[2],
+                "Date": str(r[3])[:10] if r[3] else None,
+            }
+            for r in cursor.fetchall()
+        ]
+
+        # Sample customers table
+        cursor.execute(
+            "SELECT TOP 15 CustomerRecordNumber, CustomerID, Customer_Bill_Name "
+            'FROM "Customers" ORDER BY CustomerRecordNumber DESC'
+        )
+        cust_samples = [
+            {
+                "CustomerRecordNumber": r[0],
+                "CustomerRecordNumber_type": type(r[0]).__name__,
+                "CustomerID": r[1],
+                "CustomerID_type": type(r[1]).__name__,
+                "Name": r[2],
+            }
+            for r in cursor.fetchall()
+        ]
+
+        # Check how many JrnlHdr rows have a CustVendId that matches
+        # neither CustomerRecordNumber nor CustomerID in Customers
+        cursor.execute(
+            "SELECT COUNT(*) FROM \"JrnlHdr\" j WHERE Module='R' AND JournalEx IN (8,9) "
+            "AND NOT EXISTS (SELECT 1 FROM \"Customers\" c WHERE c.CustomerRecordNumber = j.CustVendId) "
+            "AND NOT EXISTS (SELECT 1 FROM \"Customers\" c WHERE c.CustomerID = j.CustVendId)"
+        )
+        unmatched_count = cursor.fetchone()[0]
+
+        return jsonify({
+            "ok": True,
+            "unmatched_invoice_headers": unmatched_count,
+            "note": (
+                "If unmatched_invoice_headers > 0 and CustVendId_type is 'str', "
+                "the double-key fix is needed. If it's already 0, both key types work."
+            ),
+            "jrnl_custvend_samples": jrnl_samples,
+            "customers_samples": cust_samples,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+    finally:
+        sage.close()
 
 @app.route("/download/<int:trx_number>")
 def download_pdf(trx_number):
