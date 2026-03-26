@@ -21,7 +21,7 @@ from flask import Flask, render_template, jsonify, send_file, request
 
 ODBC_CONN = (
     "Driver={Pervasive ODBC Client Interface};"
-    "ServerName=localhost;DBQ=PROTONSECURITYSERVIC;"
+    "ServerName=localhost;DBQ=prosecsf;"
     "UID=Peachtree;PWD=cool123;"
 )
 API_URL = "https://preprod-ng.flick.network/v1"
@@ -723,19 +723,41 @@ def index():
     page = request.args.get("page", 1, type=int)
     q = request.args.get("q", "").strip()
     status_filter = request.args.get("status", "").strip()
+
+    # Date range — default to current month
+    today = date.today()
+    default_from = today.replace(day=1).strftime("%Y-%m-%d")
+    default_to = (
+        today.replace(day=31).strftime("%Y-%m-%d")
+        if today.month == 12
+        else today.replace(month=today.month + 1, day=1).strftime("%Y-%m-%d")
+    )
+    date_from = request.args.get("date_from", default_from).strip()
+    date_to   = request.args.get("date_to",   default_to).strip()
+
     try:
-        # Always fetch global stats from the full table (unaffected by search)
-        all_stats = db_read("SELECT status, COUNT(*) as cnt FROM invoices GROUP BY status")
+        # Stats reflect the selected date range
+        range_params = (date_from, date_to)
+        all_stats = db_read(
+            "SELECT status, COUNT(*) as cnt FROM invoices "
+            "WHERE invoice_date >= ? AND invoice_date <= ? GROUP BY status",
+            range_params
+        )
         stats = {"total": 0, "posted": 0, "pending": 0, "failed": 0, "credit_notes": 0, "invoices_count": 0}
         for s in all_stats: stats[s["status"]] = s["cnt"]; stats["total"] += s["cnt"]
-        type_stats = db_read("SELECT invoice_type, COUNT(*) as cnt FROM invoices GROUP BY invoice_type")
+        type_stats = db_read(
+            "SELECT invoice_type, COUNT(*) as cnt FROM invoices "
+            "WHERE invoice_date >= ? AND invoice_date <= ? GROUP BY invoice_type",
+            range_params
+        )
         for t in type_stats:
             if t["invoice_type"] == "Credit Note": stats["credit_notes"] = t["cnt"]
             elif t["invoice_type"] == "Invoice": stats["invoices_count"] = t["cnt"]
 
-        # Build WHERE clause for search + status filter
-        where_parts = []
-        params = []
+        # Date range is always applied as base filter
+        where_parts = ["invoice_date >= ?", "invoice_date <= ?"]
+        params = [date_from, date_to]
+
         if q:
             where_parts.append(
                 "(LOWER(customer_name) LIKE ? OR LOWER(customer_id) LIKE ? OR LOWER(invoice_num) LIKE ?)"
@@ -746,7 +768,7 @@ def index():
             where_parts.append("status = ?")
             params.append(status_filter)
 
-        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        where_sql = "WHERE " + " AND ".join(where_parts)
 
         count_row = db_read_one(f"SELECT COUNT(*) as cnt FROM invoices {where_sql}", tuple(params))
         total = count_row["cnt"] if count_row else 0
@@ -764,7 +786,8 @@ def index():
         "index.html",
         invoices=invoices, stats=stats,
         page=page, total_pages=total_pages, total=total,
-        q=q, status_filter=status_filter
+        q=q, status_filter=status_filter,
+        date_from=date_from, date_to=date_to
     )
 
 @app.route("/api/sync", methods=["POST"])
@@ -848,9 +871,11 @@ def api_stats():
 
 @app.route("/api/debug-lines/<int:trx_number>")
 def api_debug_lines(trx_number):
+    # trx_number in URL IS the post_order value
     inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
-    lines, vat_amount, error = fetch_line_items(trx_number)  # trx_number here IS post_order from URL; subtotal = sum(l["amount"] for l in lines)
-    return jsonify({"trx_number": trx_number, "post_order": inv.get("post_order") if inv else None,
+    lines, vat_amount, error = fetch_line_items(trx_number)
+    subtotal = sum(l["amount"] for l in lines)
+    return jsonify({"post_order": trx_number, "trx_number": inv.get("trx_number") if inv else None,
         "invoice": {"invoice_num": inv["invoice_num"], "customer_name": inv["customer_name"], "amount": inv["amount"], "status": inv["status"]} if inv else None,
         "lines_found": len(lines), "lines": lines[:20], "vat_amount": vat_amount, "subtotal": subtotal, "grand_total": subtotal+vat_amount, "error": error})
 

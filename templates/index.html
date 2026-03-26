@@ -148,18 +148,21 @@
 <!-- Sync toolbar -->
 <div class="toolbar">
     <label style="font-size:12px;color:var(--slate500)">From:</label>
-    <input type="date" id="dateFrom">
+    <input type="date" id="dateFrom" value="{{ date_from }}" onchange="applyDateRange()">
     <label style="font-size:12px;color:var(--slate500)">To:</label>
-    <input type="date" id="dateTo">
+    <input type="date" id="dateTo" value="{{ date_to }}" onchange="applyDateRange()">
     <button class="btn" id="btnSync" onclick="syncSage()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        Sync Date Range
+        Sync Now
     </button>
     <button class="btn btn-primary btn-sm" onclick="postAllPending()">Post All Pending</button>
+    <span id="autoSyncLabel" style="font-size:11px;color:var(--slate400);margin-left:4px">Auto-sync every 10 min</span>
 </div>
 
 <!-- Search bar -->
 <form method="GET" action="/" class="search-bar" id="searchForm">
+    <input type="hidden" name="date_from" id="dateFromHidden" value="{{ date_from }}">
+    <input type="hidden" name="date_to" id="dateToHidden" value="{{ date_to }}">
     <div class="search-input-wrap">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -224,7 +227,7 @@
             <td>
                 {% if inv.status == 'posted' %}<span class="badge badge-posted">POSTED</span>
                 {% elif inv.status == 'failed' %}<span class="badge badge-failed">FAILED</span>
-                    <button class="btn-ghost" onclick="showError({{ inv.trx_number }})" title="View full error" style="color:var(--red);font-size:11px;padding:2px 6px;margin-left:4px">&#9888; Error</button>
+                    <button class="btn-ghost" onclick="showError({{ inv.post_order }})" title="View full error" style="color:var(--red);font-size:11px;padding:2px 6px;margin-left:4px">&#9888; Error</button>
                 {% else %}<span class="badge badge-pending">PENDING</span>{% endif %}
             </td>
             <td style="text-align:right;font-weight:600">{{ "{:,.2f}".format(inv.amount) }}</td>
@@ -232,15 +235,15 @@
                 {% if inv.status == 'posted' %}
                     <span style="color:var(--green);font-size:12px;font-weight:600">&#10003; Done</span>
                 {% elif inv.status == 'failed' %}
-                    <button class="btn btn-sm" style="background:var(--red);color:white" onclick="postInvoice({{ inv.trx_number }}, this)">Retry</button>
+                    <button class="btn btn-sm" style="background:var(--red);color:white" onclick="postInvoice({{ inv.post_order }}, this)">Retry</button>
                 {% else %}
-                    <button class="btn btn-primary btn-sm" onclick="postInvoice({{ inv.trx_number }}, this)">Post</button>
+                    <button class="btn btn-primary btn-sm" onclick="postInvoice({{ inv.post_order }}, this)">Post</button>
                 {% endif %}
-                <button class="btn-ghost" onclick="previewPayload({{ inv.trx_number }})" title="Preview JSON payload">{ }</button>
+                <button class="btn-ghost" onclick="previewPayload({{ inv.post_order }})" title="Preview JSON payload">{ }</button>
             </td>
             <td>
                 {% if inv.status == 'posted' %}
-                    <a href="/download/{{ inv.trx_number }}" class="btn btn-sm" style="background:var(--green);color:white">PDF &#8595;</a>
+                    <a href="/download/{{ inv.post_order }}" class="btn btn-sm" style="background:var(--green);color:white">PDF &#8595;</a>
                 {% endif %}
             </td>
         </tr>
@@ -260,7 +263,7 @@
 
 {% if total_pages > 1 %}
 <div class="pagination">
-    {% set base_url = '?q=' ~ q ~ '&status=' ~ status_filter ~ '&page=' %}
+    {% set base_url = '?date_from=' ~ date_from ~ '&date_to=' ~ date_to ~ '&q=' ~ q ~ '&status=' ~ status_filter ~ '&page=' %}
     {% if page > 1 %}<a href="{{ base_url ~ (page - 1) }}">&laquo; Prev</a>{% endif %}
     {% for p in range(1, total_pages + 1) %}
         {% if p == page %}<span class="active">{{ p }}</span>
@@ -339,14 +342,15 @@
 </div>
 
 <script>
-// Set default dates to current month
-(function() {
-    var now = new Date();
-    var y = now.getFullYear(), m = String(now.getMonth()+1).padStart(2,'0');
-    document.getElementById('dateFrom').value = y + '-' + m + '-01';
-    var last = new Date(y, now.getMonth()+1, 0);
-    document.getElementById('dateTo').value = y + '-' + m + '-' + String(last.getDate()).padStart(2,'0');
-})();
+// Date pickers are pre-filled from server ({{ date_from }}, {{ date_to }})
+// Changing either triggers a page reload with the new range
+function applyDateRange() {
+    var df = document.getElementById('dateFrom').value;
+    var dt = document.getElementById('dateTo').value;
+    if (df && dt) {
+        window.location.href = '/?date_from=' + df + '&date_to=' + dt;
+    }
+}
 
 // === SEARCH & FILTER ===
 function setStatusFilter(status) {
@@ -383,7 +387,7 @@ function syncSage() {
     fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({date_from: df, date_to: dt}) })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.ok) { toast('Synced ' + data.synced + ' invoices (' + data.new + ' new)', 'success'); setTimeout(function(){location.reload();}, 800); }
+            if (data.ok) { toast('Synced ' + data.synced + ' invoices (' + data.new + ' new)', 'success'); setTimeout(function(){ window.location.href = '/?date_from=' + df + '&date_to=' + dt; }, 800); }
             else { toast('Sync failed: ' + data.error, 'error'); btn.disabled = false; btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> Sync Date Range'; }
         }).catch(function(e) { toast('Error: ' + e.message, 'error'); btn.disabled = false; btn.textContent = 'Sync Date Range'; });
 }
@@ -516,8 +520,21 @@ function fetchFlickCategories() {
 }
 document.getElementById('settingsModal').addEventListener('click', function(e) { if (e.target === this) closeSettings(); });
 
-// Auto-sync on first load (only when no search active)
-{% if not q and not status_filter %}
+// Silent background sync — no spinner, just reloads if new invoices found
+function bgSync() {
+    var df = document.getElementById('dateFrom').value;
+    var dt = document.getElementById('dateTo').value;
+    fetch('/api/sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({date_from: df, date_to: dt}) })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok && data.new > 0) {
+                toast('Auto-sync: ' + data.new + ' new invoice(s) found', 'success');
+                setTimeout(function() { location.reload(); }, 1200);
+            }
+        }).catch(function() {});
+}
+
+// Auto-sync on page load
 window.addEventListener('load', function() {
     var banner = document.getElementById('syncBanner');
     var txt = document.getElementById('syncBannerText');
@@ -534,8 +551,10 @@ window.addEventListener('load', function() {
                 else setTimeout(function() { banner.style.display = 'none'; }, 3000);
             } else { banner.className = 'sync-banner error'; txt.textContent = 'Sync failed: ' + (data.error||''); }
         }).catch(function(e) { sp.style.display = 'none'; banner.className = 'sync-banner error'; txt.textContent = 'Sync error: ' + e.message; });
+
+    // Auto-sync every 10 minutes in the background
+    setInterval(bgSync, 10 * 60 * 1000);
 });
-{% endif %}
 </script>
 </body>
 </html>
