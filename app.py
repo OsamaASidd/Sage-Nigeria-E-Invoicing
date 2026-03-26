@@ -21,7 +21,7 @@ from flask import Flask, render_template, jsonify, send_file, request
 
 ODBC_CONN = (
     "Driver={Pervasive ODBC Client Interface};"
-    "ServerName=localhost;DBQ=prosecsf;"
+    "ServerName=localhost;DBQ=PROTONSECURITYSERVIC;"
     "UID=Peachtree;PWD=cool123;"
 )
 API_URL = "https://preprod-ng.flick.network/v1"
