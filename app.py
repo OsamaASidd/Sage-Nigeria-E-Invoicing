@@ -92,29 +92,99 @@ def db_write_many(operations):
         finally: conn.close()
 
 def init_db():
+    """
+    Schema uses post_order as PRIMARY KEY (always unique in Sage).
+    JrnlKey_TrxNumber is NOT unique: Sage reuses it for recurring invoices
+    (same TRX number, different PostOrder each month). Using trx_number as PK
+    caused recurring invoices to silently overwrite each other.
+    Migration: if old trx_number-PK table exists, rename and rebuild.
+    """
     with _db_lock:
         conn = _open_db()
         try:
+            # Detect old schema (PK was trx_number)
+            old_schema = False
+            try:
+                info = conn.execute("PRAGMA table_info(invoices)").fetchall()
+                pk_col = next((r[1] for r in info if r[5] == 1), None)
+                if pk_col == "trx_number":
+                    old_schema = True
+            except:
+                pass
+
+            if old_schema:
+                print("[MIGRATION] Old schema detected (PK=trx_number). Migrating to PK=post_order...")
+                conn.execute("ALTER TABLE invoices RENAME TO invoices_old")
+                try:
+                    conn.execute("ALTER TABLE invoice_lines RENAME TO invoice_lines_old")
+                except:
+                    pass
+                conn.commit()
+
             conn.execute("""CREATE TABLE IF NOT EXISTS invoices (
-                trx_number INTEGER PRIMARY KEY, post_order INTEGER,
+                post_order INTEGER PRIMARY KEY,
+                trx_number INTEGER,
                 invoice_num TEXT, customer_name TEXT, customer_id TEXT,
                 customer_tin TEXT, customer_email TEXT, customer_phone TEXT,
                 customer_address TEXT, customer_city TEXT, invoice_date TEXT,
-                amount REAL DEFAULT 0, status TEXT DEFAULT 'pending',
-                irn TEXT, qr_code TEXT, posted_at TEXT, error_message TEXT, api_response TEXT,
-                invoice_description TEXT, invoice_type TEXT DEFAULT 'Invoice', last_synced TEXT)""")
+                amount REAL DEFAULT 0, vat_amount REAL DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                irn TEXT, qr_code TEXT, posted_at TEXT,
+                error_message TEXT, api_response TEXT,
+                invoice_description TEXT,
+                invoice_type TEXT DEFAULT 'Invoice',
+                last_synced TEXT)""")
+
             conn.execute("""CREATE TABLE IF NOT EXISTS invoice_lines (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, trx_number INTEGER,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_order INTEGER,
+                trx_number INTEGER,
                 line_num INTEGER, item_code TEXT, description TEXT,
-                quantity REAL DEFAULT 1, unit_price REAL DEFAULT 0, amount REAL DEFAULT 0)""")
+                quantity REAL DEFAULT 1, unit_price REAL DEFAULT 0,
+                amount REAL DEFAULT 0, tax_rate REAL DEFAULT 0)""")
+
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_trx ON invoices(trx_number)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_invoices_customer ON invoices(customer_id)")
             conn.commit()
-            for tbl, col, typ in [
-                ("invoices","invoice_description","TEXT"),("invoices","post_order","INTEGER"),
-                ("invoices","vat_amount","REAL DEFAULT 0"),("invoice_lines","tax_rate","REAL DEFAULT 0"),
-                ("invoices","api_response","TEXT"),("invoices","invoice_type","TEXT DEFAULT 'Invoice'")]:
-                try: conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}"); conn.commit()
-                except: pass
-        finally: conn.close()
+
+            if old_schema:
+                conn.execute("""
+                    INSERT OR IGNORE INTO invoices
+                        (post_order, trx_number, invoice_num, customer_name, customer_id,
+                         customer_tin, customer_email, customer_phone, customer_address,
+                         customer_city, invoice_date, amount, vat_amount, status,
+                         irn, qr_code, posted_at, error_message, api_response,
+                         invoice_description, invoice_type, last_synced)
+                    SELECT
+                        COALESCE(post_order, trx_number),
+                        trx_number, invoice_num, customer_name, customer_id,
+                        customer_tin, customer_email, customer_phone, customer_address,
+                        customer_city, invoice_date, amount,
+                        COALESCE(vat_amount, 0), status,
+                        irn, qr_code, posted_at, error_message, api_response,
+                        invoice_description, invoice_type, last_synced
+                    FROM invoices_old
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO invoice_lines
+                        (post_order, trx_number, line_num, item_code, description,
+                         quantity, unit_price, amount, tax_rate)
+                    SELECT
+                        COALESCE(
+                            (SELECT post_order FROM invoices_old
+                             WHERE trx_number = il.trx_number LIMIT 1),
+                            il.trx_number
+                        ),
+                        il.trx_number, il.line_num, il.item_code, il.description,
+                        il.quantity, il.unit_price, il.amount,
+                        COALESCE(il.tax_rate, 0)
+                    FROM invoice_lines_old il
+                """)
+                conn.commit()
+                print("[MIGRATION] Done. Old tables kept as invoices_old/invoice_lines_old.")
+        finally:
+            conn.close()
 
 init_db()
 
@@ -162,6 +232,27 @@ def sync_headers_from_sage(date_from=None, date_to=None):
             (date_from, date_to),
         )
         headers = cursor.fetchall()
+
+        # ── Build invoice number lookup from JrnlRow.InvNumForThisTrx ──
+        # JrnlRow has an InvNumForThisTrx column on every line, keyed by PostOrder.
+        # This is the authoritative invoice number — it is present even for recurring
+        # invoices that have a blank JrnlHdr.Reference field.
+        inv_num_by_po = {}
+        try:
+            # Pervasive SQL doesn't support != '' — filter empty strings in Python instead
+            cursor.execute(
+                'SELECT DISTINCT PostOrder, InvNumForThisTrx FROM "JrnlRow" '
+                'WHERE InvNumForThisTrx IS NOT NULL '
+                'AND PostOrder IS NOT NULL AND PostOrder != 0'
+            )
+            for row in cursor.fetchall():
+                po, inv = row[0], to_str(row[1])
+                if po and inv:  # skip empty strings here in Python
+                    if po not in inv_num_by_po:
+                        inv_num_by_po[po] = inv
+            print(f"[SYNC] Invoice numbers from JrnlRow.InvNumForThisTrx: {len(inv_num_by_po)}")
+        except Exception as e:
+            print(f"[WARN] Could not load InvNumForThisTrx: {e}")
 
         # ── FIX: Build cust_map keyed by BOTH CustomerRecordNumber (int) ──
         # AND CustomerID (text), because JrnlHdr.CustVendId may store either.
@@ -230,7 +321,11 @@ def sync_headers_from_sage(date_from=None, date_to=None):
     finally:
         sage.close()
 
-    existing_map = {r["trx_number"]: r["status"] for r in db_read("SELECT trx_number, status FROM invoices")}
+    # ── Key by post_order (unique) not trx_number (reused for recurring invoices) ──
+    # Sage reuses JrnlKey_TrxNumber for recurring monthly invoices — same TRX,
+    # different PostOrder each month. Using trx_number as PK caused all but one
+    # occurrence to be silently discarded on INSERT conflict.
+    existing_po = {r["post_order"]: r["status"] for r in db_read("SELECT post_order, status FROM invoices")}
     now = datetime.now().isoformat()
     operations = []
     new_count = 0
@@ -240,16 +335,20 @@ def sync_headers_from_sage(date_from=None, date_to=None):
         trx_num, post_order, cust_vendor_id, tx_date = hdr[0], hdr[1], hdr[2], hdr[3]
         main_amt, ref, desc = to_float(hdr[4]), to_str(hdr[5]), to_str(hdr[6])
         jrnl_ex = int(hdr[7]) if len(hdr) > 7 and hdr[7] is not None else 0
-        inv_num = ref if ref else f"TRX-{trx_num}"
         tx_date_str = (
             tx_date.strftime("%Y-%m-%d")
             if isinstance(tx_date, (datetime, date))
             else str(tx_date)[:10]
         )
 
-        # ── FIX: Try int key first, then string key ──
-        # Sage may store CustVendId as int (CustomerRecordNumber) or as
-        # text (CustomerID). Trying both covers all cases including new customers.
+        # Invoice number: JrnlHdr.Reference is blank for recurring invoices.
+        # JrnlRow.InvNumForThisTrx is always populated and is the true invoice number.
+        # Priority: 1) JrnlHdr.Reference  2) JrnlRow.InvNumForThisTrx by PostOrder
+        inv_num = ref or inv_num_by_po.get(post_order, "")
+        if not inv_num:
+            print(f"[WARN] No invoice number found for PostOrder={post_order} TRX={trx_num}")
+            inv_num = f"PO-{post_order}"
+
         cust = (
             cust_map.get(cust_vendor_id)
             or cust_map.get(to_str(cust_vendor_id))
@@ -258,7 +357,6 @@ def sync_headers_from_sage(date_from=None, date_to=None):
         if not cust:
             unresolved.append(cust_vendor_id)
 
-        # Address: try int key, then string key against addr_by_custid
         addr = (
             addr_map.get(cust_vendor_id)
             or addr_map.get(int(cust_vendor_id) if str(cust_vendor_id).isdigit() else -1, {})
@@ -266,47 +364,40 @@ def sync_headers_from_sage(date_from=None, date_to=None):
             or {}
         )
 
-        # Fallback name: use journal description, or a labelled unknown
         cust_name = cust.get("name", "") or desc or f"Unknown ({cust_vendor_id})"
 
-        # Detect invoice type from JournalEx (Sage 50 official):
-        #   8 = Sales Invoice, 9 = Customer Credit Memo
         if jrnl_ex == 9 or main_amt < 0 or "CREDIT MEMO" in (ref or "").upper() or (ref or "").upper().startswith("CM/"):
             inv_type = "Credit Note"
         else:
             inv_type = "Invoice"
 
-        if trx_num in existing_map:
-            operations.append((
-                "UPDATE invoices SET post_order=?,invoice_num=?,customer_name=?,customer_id=?,"
-                "customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,"
-                "invoice_date=?,amount=?,invoice_description=?,invoice_type=?,last_synced=? WHERE trx_number=?",
-                (post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
-                 cust.get("email",""), cust.get("phone",""), addr.get("address",""),
-                 addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now, trx_num),
-            ))
+        # INSERT or UPDATE keyed on post_order — never overwrites a posted record
+        if post_order in existing_po:
+            if existing_po[post_order] != "posted":
+                operations.append((
+                    "UPDATE invoices SET trx_number=?,invoice_num=?,customer_name=?,customer_id=?,"
+                    "customer_tin=?,customer_email=?,customer_phone=?,customer_address=?,customer_city=?,"
+                    "invoice_date=?,amount=?,invoice_description=?,invoice_type=?,last_synced=? "
+                    "WHERE post_order=?",
+                    (trx_num, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
+                     cust.get("email",""), cust.get("phone",""), addr.get("address",""),
+                     addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now, post_order),
+                ))
         else:
             new_count += 1
             operations.append((
-                "INSERT INTO invoices (trx_number,post_order,invoice_num,customer_name,customer_id,"
+                "INSERT INTO invoices (post_order,trx_number,invoice_num,customer_name,customer_id,"
                 "customer_tin,customer_email,customer_phone,customer_address,customer_city,"
                 "invoice_date,amount,status,invoice_description,invoice_type,last_synced) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?,?)",
-                (trx_num, post_order, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
+                (post_order, trx_num, inv_num, cust_name, cust.get("id",""), cust.get("tin",""),
                  cust.get("email",""), cust.get("phone",""), addr.get("address",""),
                  addr.get("city",""), tx_date_str, main_amt, desc, inv_type, now),
             ))
 
     if unresolved:
-        unique_unresolved = list(set(str(x) for x in unresolved))
-        print(
-            f"[WARN] {len(unresolved)} invoice(s) had unresolved CustVendId values: "
-            f"{unique_unresolved[:10]}"
-        )
-        print(
-            "       Hit /api/debug-sync to inspect what CustVendId contains vs "
-            "what's in the Customers table."
-        )
+        print(f"[WARN] {len(set(str(x) for x in unresolved))} unresolved CustVendId(s). "
+              f"Hit /api/debug-sync to inspect.")
 
     if operations:
         db_write_many(operations)
@@ -322,21 +413,13 @@ def sync_headers_from_sage(date_from=None, date_to=None):
 
 
 # === FETCH LINE ITEMS (PostOrder FK) ===
-def fetch_line_items(trx_number):
-    inv = db_read_one("SELECT post_order FROM invoices WHERE trx_number=?", (trx_number,))
-    post_order = inv.get("post_order") if inv else None
+def fetch_line_items(post_order):
+    """Fetch Sage line items by PostOrder (unique, handles recurring invoices)."""
     try: sage = pyodbc.connect(ODBC_CONN)
     except Exception as e: return [], 0, f"ODBC: {e}"
     try:
         cursor = sage.cursor()
-        if not post_order:
-            cursor.execute('SELECT PostOrder FROM "JrnlHdr" WHERE JrnlKey_TrxNumber=? AND Module=\'R\' ORDER BY PostOrder DESC', (trx_number,))
-            row = cursor.fetchone()
-            if row:
-                post_order = row[0]
-                db_write("UPDATE invoices SET post_order=? WHERE trx_number=?", (post_order, trx_number))
-            else: return [], 0, "No Module='R' header in Sage"
-        print(f"[POST] TRX {trx_number}: PostOrder={post_order}")
+        print(f"[LINES] PostOrder={post_order}")
         jrnlrow_cols = [c.column_name for c in cursor.columns(table="JrnlRow")]
         jr_amount = find_col(jrnlrow_cols, "Amount")
         jr_qty = find_col(jrnlrow_cols, "Quantity", "StockingQuantity")
@@ -420,9 +503,9 @@ def fetch_line_items(trx_number):
 
 # === BUILD PAYLOAD (shared by post and preview) ===
 def build_payload(trx_number):
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
     if not inv: return None, [], 0, "Invoice not found"
-    lines, vat_amount, line_error = fetch_line_items(trx_number)
+    lines, vat_amount, line_error = fetch_line_items(inv["post_order"] if inv else trx_number)
     if not lines:
         amt = abs(to_float(inv["amount"]))
         if amt > 0:
@@ -515,18 +598,18 @@ def build_payload(trx_number):
 
 # === POST TO FIRS ===
 def post_to_firs(trx_number):
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
     if not inv: return {"ok": False, "error": "Not found"}
     if inv["status"] == "posted": return {"ok": False, "error": "Already posted", "irn": inv["irn"]}
     payload, lines, vat_amount, build_error = build_payload(trx_number)
     if not payload:
-        db_write("UPDATE invoices SET status='failed', error_message=? WHERE trx_number=?", (build_error[:500], trx_number))
+        db_write("UPDATE invoices SET status='failed', error_message=? WHERE post_order=?", (build_error[:500], trx_number))
         return {"ok": False, "error": build_error}
-    ops = [("DELETE FROM invoice_lines WHERE trx_number=?", (trx_number,)),
-           ("UPDATE invoices SET vat_amount=? WHERE trx_number=?", (vat_amount, trx_number))]
+    ops = [("DELETE FROM invoice_lines WHERE post_order=?", (trx_number,)),
+           ("UPDATE invoices SET vat_amount=? WHERE post_order=?", (vat_amount, trx_number))]
     for i, line in enumerate(lines):
-        ops.append(("INSERT INTO invoice_lines (trx_number,line_num,item_code,description,quantity,unit_price,amount,tax_rate) VALUES (?,?,?,?,?,?,?,?)",
-            (trx_number, i+1, line["item_code"], line["description"], line["quantity"], line["unit_price"], line["amount"], line.get("tax_rate",0))))
+        ops.append(("INSERT INTO invoice_lines (post_order,trx_number,line_num,item_code,description,quantity,unit_price,amount,tax_rate) VALUES (?,?,?,?,?,?,?,?,?)",
+            (trx_number, inv["trx_number"], i+1, line["item_code"], line["description"], line["quantity"], line["unit_price"], line["amount"], line.get("tax_rate",0))))
     db_write_many(ops)
     try:
         resp = requests.post(f"{API_URL}/invoice/generate", headers=API_HEADERS, json=payload, timeout=30)
@@ -536,24 +619,24 @@ def post_to_firs(trx_number):
         except: pass
         if resp.status_code in (200, 201):
             data = resp_json.get("data", resp_json); irn = data.get("irn", "N/A"); qr_code = data.get("qr_code", "")
-            db_write("UPDATE invoices SET status='posted', irn=?, qr_code=?, posted_at=?, error_message=NULL, api_response=? WHERE trx_number=?",
+            db_write("UPDATE invoices SET status='posted', irn=?, qr_code=?, posted_at=?, error_message=NULL, api_response=? WHERE post_order=?",
                 (irn, qr_code, datetime.now().isoformat(), resp_text[:5000], trx_number))
             generate_pdf(trx_number); return {"ok": True, "irn": irn, "status": "posted"}
         elif resp.status_code == 409:
             errors = resp_json.get("errors", {}); irn = errors.get("irn", resp_json.get("irn", "")); qr_code = errors.get("qr_code", resp_json.get("qr_code", ""))
             if irn:
-                db_write("UPDATE invoices SET status='posted', irn=?, qr_code=?, posted_at=?, error_message=NULL, api_response=? WHERE trx_number=?",
+                db_write("UPDATE invoices SET status='posted', irn=?, qr_code=?, posted_at=?, error_message=NULL, api_response=? WHERE post_order=?",
                     (irn, qr_code, datetime.now().isoformat(), resp_text[:5000], trx_number))
                 generate_pdf(trx_number); return {"ok": True, "irn": irn, "status": "posted", "note": "Already on FIRS"}
             error_msg = resp_json.get("message", "409 conflict")
-            db_write("UPDATE invoices SET status='failed', error_message=?, api_response=? WHERE trx_number=?", (error_msg[:500], resp_text[:5000], trx_number))
+            db_write("UPDATE invoices SET status='failed', error_message=?, api_response=? WHERE post_order=?", (error_msg[:500], resp_text[:5000], trx_number))
             return {"ok": False, "error": error_msg, "status_code": resp.status_code, "api_response": resp_json or resp_text[:2000]}
         else:
             error_msg = resp_json.get("message", resp.text[:300])
-            db_write("UPDATE invoices SET status='failed', error_message=?, api_response=? WHERE trx_number=?", (error_msg[:500], resp_text[:5000], trx_number))
+            db_write("UPDATE invoices SET status='failed', error_message=?, api_response=? WHERE post_order=?", (error_msg[:500], resp_text[:5000], trx_number))
             return {"ok": False, "error": error_msg, "status_code": resp.status_code, "api_response": resp_json or resp_text[:2000]}
     except requests.exceptions.ConnectionError as e:
-        db_write("UPDATE invoices SET status='failed', error_message=? WHERE trx_number=?", (f"Connection: {str(e)[:200]}", trx_number))
+        db_write("UPDATE invoices SET status='failed', error_message=? WHERE post_order=?", (f"Connection: {str(e)[:200]}", trx_number))
         return {"ok": False, "error": f"Connection failed: {e}"}
     except Exception as e: return {"ok": False, "error": str(e)}
 
@@ -562,8 +645,8 @@ def generate_pdf(trx_number):
     from reportlab.lib.pagesizes import A4; from reportlab.lib import colors
     from reportlab.pdfgen import canvas; from reportlab.platypus import Table, TableStyle
     from reportlab.lib.utils import ImageReader
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
-    lines = db_read("SELECT * FROM invoice_lines WHERE trx_number=? ORDER BY line_num", (trx_number,))
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
+    lines = db_read("SELECT * FROM invoice_lines WHERE post_order=? ORDER BY line_num", (trx_number,))
     if not inv: return None
     qr_img_reader = None
     if inv["qr_code"]:
@@ -694,7 +777,7 @@ def api_post(trx_number): return jsonify(post_to_firs(trx_number))
 
 @app.route("/api/error-details/<int:trx_number>")
 def api_error_details(trx_number):
-    inv = db_read_one("SELECT trx_number, invoice_num, customer_name, status, error_message, api_response FROM invoices WHERE trx_number=?", (trx_number,))
+    inv = db_read_one("SELECT trx_number, post_order, invoice_num, customer_name, status, error_message, api_response FROM invoices WHERE post_order=?", (trx_number,))
     if not inv: return jsonify({"ok": False, "error": "Invoice not found"})
     api_resp = inv.get("api_response") or ""
     parsed = None
@@ -735,7 +818,7 @@ def api_flick_tax_categories():
 
 @app.route("/api/preview-payload/<int:trx_number>")
 def api_preview_payload(trx_number):
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
     if not inv: return jsonify({"ok": False, "error": "Invoice not found"})
     payload, lines, vat_amount, error = build_payload(trx_number)
     if not payload: return jsonify({"ok": False, "error": error or "Failed to build payload"})
@@ -749,8 +832,8 @@ def api_preview_payload(trx_number):
 
 @app.route("/api/post-bulk", methods=["POST"])
 def api_post_bulk():
-    pending = db_read("SELECT trx_number FROM invoices WHERE status='pending'"); results = []
-    for row in pending: results.append({"trx": row["trx_number"], **post_to_firs(row["trx_number"])})
+    pending = db_read("SELECT post_order, trx_number FROM invoices WHERE status='pending'"); results = []
+    for row in pending: results.append({"trx": row["post_order"], **post_to_firs(row["post_order"])})
     posted = sum(1 for r in results if r.get("ok"))
     return jsonify({"ok": True, "posted": posted, "failed": len(results)-posted, "details": results})
 
@@ -765,11 +848,48 @@ def api_stats():
 
 @app.route("/api/debug-lines/<int:trx_number>")
 def api_debug_lines(trx_number):
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
-    lines, vat_amount, error = fetch_line_items(trx_number); subtotal = sum(l["amount"] for l in lines)
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
+    lines, vat_amount, error = fetch_line_items(trx_number)  # trx_number here IS post_order from URL; subtotal = sum(l["amount"] for l in lines)
     return jsonify({"trx_number": trx_number, "post_order": inv.get("post_order") if inv else None,
         "invoice": {"invoice_num": inv["invoice_num"], "customer_name": inv["customer_name"], "amount": inv["amount"], "status": inv["status"]} if inv else None,
         "lines_found": len(lines), "lines": lines[:20], "vat_amount": vat_amount, "subtotal": subtotal, "grand_total": subtotal+vat_amount, "error": error})
+
+@app.route("/api/debug-invoice-tables")
+def api_debug_invoice_tables():
+    """Show all Sage tables that might contain real invoice numbers for recurring invoices."""
+    try:
+        sage = pyodbc.connect(ODBC_CONN)
+        cursor = sage.cursor()
+        all_tables = [t.table_name for t in cursor.tables(tableType="TABLE")]
+        results = {}
+        # Check any table that sounds invoice/order related
+        candidates = [t for t in all_tables if any(k in t.upper()
+            for k in ["INVOICE","ORDER","SALES","AR","JRNL"])]
+        for table in candidates:
+            try:
+                cols = [c.column_name for c in cursor.columns(table=table)]
+                po_col  = find_col(cols, "PostOrder","PostOrderNumber")
+                num_col = find_col(cols, "InvoiceNumber","InvoiceNum","ReferenceNumber",
+                                   "Reference","DocNumber","SalesInvoiceNumber","OrderNumber")
+                cursor.execute(f'SELECT COUNT(*) FROM "{table}"')
+                cnt = cursor.fetchone()[0]
+                results[table] = {
+                    "row_count": cnt,
+                    "columns": cols[:20],
+                    "has_post_order_col": po_col,
+                    "has_inv_num_col": num_col,
+                    "useful": bool(po_col and num_col)
+                }
+                if po_col and num_col and cnt > 0:
+                    cursor.execute(f'SELECT TOP 3 {po_col}, {num_col} FROM "{table}" WHERE {po_col} IS NOT NULL AND {po_col} != 0')
+                    results[table]["samples"] = [[r[0], to_str(r[1])] for r in cursor.fetchall()]
+            except Exception as e:
+                results[table] = {"error": str(e)}
+        sage.close()
+        useful = {k:v for k,v in results.items() if v.get("useful")}
+        return jsonify({"ok": True, "useful_tables": useful, "all_candidates": list(results.keys()), "details": results})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/api/debug-sync")
 def api_debug_sync():
@@ -845,7 +965,7 @@ def api_debug_sync():
 
 @app.route("/download/<int:trx_number>")
 def download_pdf(trx_number):
-    inv = db_read_one("SELECT * FROM invoices WHERE trx_number=?", (trx_number,))
+    inv = db_read_one("SELECT * FROM invoices WHERE post_order=?", (trx_number,))
     if not inv or inv["status"] != "posted": return "Not posted yet", 404
     safe_name = (inv["invoice_num"] or f"TRX-{trx_number}").replace("/","_").replace("\\","_").replace(" ","_")
     pdf_path = os.path.join(PDF_DIR, f"{safe_name}.pdf")
