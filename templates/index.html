@@ -112,7 +112,7 @@
     </div>
     <div class="header-right" style="display:flex;align-items:center;gap:8px">
         <button class="btn-ghost" onclick="openSettings()" title="Tax Category Settings" style="font-size:18px;padding:4px 8px">&#9881;</button>
-        <span class="header-env">PREPROD</span>
+        <span class="header-env">PROD</span>
     </div>
 </header>
 
@@ -319,7 +319,7 @@
 <div class="modal-overlay" id="settingsModal">
     <div class="modal" style="max-width:480px">
         <h3>&#9881; Tax Category Settings</h3>
-        <div class="modal-subtitle">Change tax_category_id values sent to Flick API (applies immediately, no restart needed)</div>
+        <div class="modal-subtitle">Change tax_category_id values sent to Cryptware API (applies immediately, no restart needed)</div>
         <div style="margin:16px 0">
             <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--slate500)">Taxable lines (VAT &gt; 0%)</label>
             <input id="setCatStandard" type="text" style="width:100%;padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:14px" value="">
@@ -331,7 +331,7 @@
             <div style="font-size:10px;color:var(--slate400);margin-top:2px">Try: ZERO_RATE, EXEMPT, TAX_EXEMPT, E, Z, O, NTX, 06</div>
         </div>
         <div style="margin:8px 0">
-            <button class="btn btn-sm" style="background:var(--navy);color:white;font-size:11px" onclick="fetchFlickCategories()">&#128269; Fetch Valid Categories from Flick API</button>
+            <button class="btn btn-sm" style="background:var(--navy);color:white;font-size:11px" onclick="fetchFlickCategories()">&#128269; Fetch Valid Categories from Cryptware API</button>
             <pre id="flickCatResult" style="display:none;background:#f1f5f9;color:#334155;padding:10px;border-radius:6px;font-size:11px;margin-top:8px;max-height:200px;overflow:auto;white-space:pre-wrap"></pre>
         </div>
         <div class="modal-footer">
@@ -516,7 +516,7 @@ function saveSettings() {
 function fetchFlickCategories() {
     var pre = document.getElementById('flickCatResult');
     pre.style.display = 'block'; pre.textContent = 'Fetching from Flick API...';
-    fetch('/api/flick-tax-categories').then(function(r) { return r.json(); }).then(function(data) { pre.textContent = JSON.stringify(data, null, 2); }).catch(function(e) { pre.textContent = 'Error: ' + e.message; });
+    fetch('/api/reference-tax-categories').then(function(r) { return r.json(); }).then(function(data) { pre.textContent = JSON.stringify(data, null, 2); }).catch(function(e) { pre.textContent = 'Error: ' + e.message; });
 }
 document.getElementById('settingsModal').addEventListener('click', function(e) { if (e.target === this) closeSettings(); });
 
