@@ -622,7 +622,7 @@ def post_to_firs(trx_number):
         try: resp_json = resp.json()
         except: pass
         if resp.status_code in (200, 201):
-            data = resp_json.get("data", resp_json); irn = data.get("irn", "N/A"); qr_code = data.get("qr_code", "")
+            data = resp_json.get("data", resp_json); irn = data.get("irn", "N/A"); qr_code = data.get("qr_code_url", "") or data.get("qr_code", "")
             db_write("UPDATE invoices SET status='posted', irn=?, qr_code=?, posted_at=?, error_message=NULL, api_response=? WHERE post_order=?",
                 (irn, qr_code, datetime.now().isoformat(), resp_text[:5000], trx_number))
             generate_pdf(trx_number); return {"ok": True, "irn": irn, "status": "posted"}
