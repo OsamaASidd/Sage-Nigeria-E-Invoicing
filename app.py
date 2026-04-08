@@ -14,33 +14,34 @@ Nigeria E-Invoicing Dashboard
 - NEW: /api/debug-sync to inspect CustVendId values live
 """
 
-import os, io, json, sqlite3, threading, pyodbc, requests
+import os, io, json, re, sqlite3, threading, pyodbc, requests
 from datetime import datetime, date
 from decimal import Decimal
 from flask import Flask, render_template, jsonify, send_file, request
-
 ODBC_CONN = (
     "Driver={Pervasive ODBC Client Interface};"
     "ServerName=localhost;DBQ=PROTONSECURITYSERVIC;"
     "UID=Peachtree;PWD=cool123;"
 )
-API_URL = "https://preprod-ng.flick.network/v1"
+from config import API_BASE_URL, API_KEY, SUPPLIER as _SUPPLIER_CFG
+
+API_URL = API_BASE_URL.rstrip("/")
 API_HEADERS = {
     "Content-Type": "application/json",
-    "participant-id": "019a0b76-f33e-787a-8d0f-70dc096efba6",
-    "x-api-key": "4b2e92e2929ce78f586ed468ddb7d666321e6f2a4cdcf65773669bcfec967719",
+    "x-api-key": API_KEY,
 }
+
 SUPPLIER = {
-    "name": "PROTON SECURITY SERVICES LIMITED",
-    "address": "Lagos, Nigeria",
-    "tin": "23773131-0001",
-    "email": "info@protonsecurity.com",
-    "telephone": "+234",
-    "business_id": "019a0b76-f33e-787a-8d0f-70dc096efba6",
-    "street_name": "Lagos",
-    "city_name": "Lagos",
-    "postal_zone": "100001",
-    "country": "NG",
+    "name":         _SUPPLIER_CFG["party_name"],
+    "address":      _SUPPLIER_CFG["postal_address"].get("street_name", ""),
+    "tin":          _SUPPLIER_CFG["tin"],
+    "email":        _SUPPLIER_CFG["email"],
+    "telephone":    _SUPPLIER_CFG["telephone"],
+    "business_id":  "",   # Cryptware doesn't use business_id — safe to blank
+    "street_name":  _SUPPLIER_CFG["postal_address"].get("street_name", ""),
+    "city_name":    _SUPPLIER_CFG["postal_address"].get("city_name", ""),
+    "postal_zone":  _SUPPLIER_CFG["postal_address"].get("postal_zone", ""),
+    "country":      _SUPPLIER_CFG["postal_address"].get("country", "NG"),
 }
 
 # Tax category IDs for Flick API — change these if you get "Invalid Tax category" errors
@@ -545,54 +546,57 @@ def build_payload(trx_number):
     if not api_lines: return None, lines, vat_amount, "No valid line items"
 
     inv_num = inv["invoice_num"] or f"TRX-{trx_number}"
-    irn = f"{inv_num}-{(inv['invoice_date'] or '').replace('-', '')}"
+    inv_num_safe = re.sub(r'[^A-Za-z0-9\-_]', '-', inv_num)
+    irn = f"{inv_num_safe}-{(inv['invoice_date'] or '').replace('-', '')}"
 
     inv_type = inv.get("invoice_type") or "Invoice"
-    if inv_type == "Credit Note": type_code = "381"
-    elif inv_type == "Debit Note": type_code = "383"
-    else: type_code = "394"
+    if inv_type == "Credit Note":   type_code = "380"
+    elif inv_type == "Debit Note":  type_code = "384"
+    else:                           type_code = "381"
+
+    api_lines = []
+    for i, line in enumerate(lines):
+        if line["unit_price"] <= 0: continue
+        lr = line.get("tax_rate", 0)
+        api_lines.append({
+            "description":        line["description"] or "Service",
+            "invoiced_quantity":  line["quantity"],
+            "price_amount":       line["unit_price"],
+            "hsn_code":           "2710.19",          # update to real HSN if available
+            "price_unit":         "EA",
+            "product_category":   "Service",
+            "tax_rate":           lr,
+            "tax_category_id":    TAX_CAT_STANDARD if lr > 0 else TAX_CAT_EXEMPT,
+            "discount_rate":      0,
+        })
+
+    if not api_lines: return None, lines, vat_amount, "No valid line items"
+
+    inv_num = inv["invoice_num"] or f"TRX-{trx_number}"
+    inv_num_safe = re.sub(r'[^A-Za-z0-9\-_]', '-', inv_num)
 
     payload = {
-        "business_id": SUPPLIER["business_id"],
-        "irn": irn,
-        "document_identifier": inv_num,
-        "issue_date": inv["invoice_date"],
-        "invoice_type_code": type_code,
+        "document_identifier":    inv_num_safe,
+        "invoice_type":           "STANDARD",
+        "issue_date":             inv["invoice_date"],
+        "due_date":               inv["invoice_date"],
+        "invoice_type_code":      type_code,
         "document_currency_code": "NGN",
-        "tax_currency_code": "NGN",
-        "accounting_supplier_party": {
-            "party_name": SUPPLIER["name"],
-            "tin": SUPPLIER["tin"],
-            "email": SUPPLIER["email"],
-            "telephone": SUPPLIER["telephone"],
-            "business_description": "Security Services",
-            "postal_address": {
-                "street_name": SUPPLIER["street_name"],
-                "city_name": SUPPLIER["city_name"],
-                "postal_zone": SUPPLIER["postal_zone"],
-                "country": SUPPLIER["country"],
-            },
-        },
+        "transaction_category":   "B2B",
         "accounting_customer_party": {
-            "party_name": inv["customer_name"],
-            "tin": cust_tin,
-            "email": cust_email,
-            "telephone": cust_phone,
+            "party_name":           inv["customer_name"],
+            "tin":                  cust_tin,
+            "email":                cust_email,
+            "telephone":            cust_phone,
             "business_description": "Customer",
             "postal_address": {
                 "street_name": inv["customer_address"] or "N/A",
-                "city_name": inv["customer_city"] or "Lagos",
+                "city_name":   inv["customer_city"] or "Lagos",
                 "postal_zone": "100001",
-                "country": "NG",
+                "country":     "NG",
             },
         },
-        "legal_monetary_total": {
-            "line_extension_amount": subtotal,
-            "tax_exclusive_amount": subtotal,
-            "tax_inclusive_amount": grand_total,
-            "payable_amount": grand_total,
-        },
-        "invoice_line": api_lines,
+        "invoice_lines": api_lines,
     }
     return payload, lines, vat_amount, None
 
